@@ -20,7 +20,7 @@ public final class HeartModules {
         templateRevision=revision;templateCreature=heart.creatureId();
     }
     // A full old core may contain 32 sound modules, each with embedded BGM.
-    public static final int LIMIT = 256;
+    public static final int LIMIT = 1024;
     public static int authoringLimit(){return dev.sablelife.SableLifeServerConfig.maximumModulesPerCreature();}
     private final List<VirtualModule> modules = new ArrayList<>();
     private AddonModuleRuntime addonModules;
@@ -51,6 +51,7 @@ public final class HeartModules {
     private final ModuleHealthAdjustment healthAdjustment=new ModuleHealthAdjustment();
     public void movementTurned(HeartBlockEntity heart,net.minecraft.world.phys.Vec3 pivot,org.joml.Quaterniond turn){linearMovement.turned(heart,pivot,turn);}
     public long moveActivation(UUID id){return moveSets.activation(id);}
+    public UUID moveTarget(UUID moduleId) { return moveSets.target(moduleId); }
     public final ModuleSignalLogic signalLogic=new ModuleSignalLogic();
     public final ModuleCombatEvents combatEvents=new ModuleCombatEvents();
     private final ModuleHealthPhase healthPhase = new ModuleHealthPhase();
@@ -62,7 +63,14 @@ public final class HeartModules {
     private final ModuleSignalTurn signalTurn=new ModuleSignalTurn();
     private final ModuleAutoFacing autoFacing = new ModuleAutoFacing();
     private final ModuleLinearMovement linearMovement = new ModuleLinearMovement();
+    private final ModulePropulsion propulsion = new ModulePropulsion();
+    private final ModuleMotionDamping motionDamping = new ModuleMotionDamping();
+    private final CommandTarget commandTarget = new CommandTarget();
+    public CommandTarget commandTarget() { return commandTarget; }
     private final ModuleCommands commands = new ModuleCommands();
+    private final ModuleMessageDisplay messageDisplay = new ModuleMessageDisplay();
+    private List<VirtualModule> messageModules;
+    void resetMessages(UUID id) { messageDisplay.reset(id); }
     private final ModuleMoveSet moveSets = new ModuleMoveSet();
     public final ModuleHurt hurtTriggers = new ModuleHurt();
     public CompoundTag sequenceSnapshot(UUID id) { return sequence.snapshot(id); }
@@ -78,6 +86,7 @@ public final class HeartModules {
         for(var id:audioModules)if(!active.contains(id))ModuleAudio.stop(level,id);audioModules.clear();audioModules.addAll(active);
     }
     public void tick(HeartBlockEntity heart) {
+        if (heart.getLevel() instanceof net.minecraft.server.level.ServerLevel level) commandTarget.current(level);
         reconcileTemplates(heart);
         long policy = ModuleAvailability.mask(heart);
         if (lastPolicy != policy) {
@@ -93,6 +102,8 @@ public final class HeartModules {
             hurtTriggers.tick(heart); healthPhase.tick(heart); combatEvents.tick(heart); signalLogic.tick(heart);
             partBreak.tick(heart); moveSets.tick(heart); sequence.tick(heart); armorBilling.tick(heart); hitCounter.tick(heart);
             healthAdjustment.tick(heart); commands.tick(heart); tickMotion(heart); ModuleLoot.tick(heart);
+            if (messageModules == null) messageModules = modules.stream().filter(m -> m.type().equals("message_display")).toList();
+            messageDisplay.tick(heart, messageModules);
             events.tick(heart); combat.tick(heart); summonedWeapons.tick(heart); surfaceFields.tick(heart);
             arena.tick(heart); groundStrike.tick(heart); sphereBlast.tick(heart); slash.tick(heart);
             laser.tick(heart); pull.tick(heart); freeze.tick(heart); grab.tick(heart); quake.tick(heart);
@@ -108,15 +119,20 @@ public final class HeartModules {
         blockInteraction.tick(heart);
         boolean hoverBusy=hoverAnchor.tick(heart);
         if(hoverBusy)linearMovement.clear();else linearMovement.tick(heart);
-        boolean gyroBusy=gyroscope.tick(heart,hoverAnchor.locksRotation()||linearMovement.locksRotation(),linearMovement.gravityActive(),hoverAnchor.rotationPivot(heart));
-        boolean manualBusy=signalTurn.tick(heart,hoverBusy||linearMovement.blocksTurning()||gyroBusy,linearMovement.preserveTranslation());
-        autoFacing.tick(heart,hoverBusy||linearMovement.blocksTurning()||gyroBusy||manualBusy,linearMovement.preserveTranslation());
+        boolean turningLocked = hoverBusy || linearMovement.blocksTurning();
+        boolean preserveTranslation = linearMovement.preserveTranslation();
+        boolean gyroBusy = gyroscope.tick(heart, hoverAnchor.locksRotation() || linearMovement.locksRotation(),
+                linearMovement.gravityActive(), hoverAnchor.rotationPivot(heart), turningLocked ? null : signalTurn);
+        boolean manualBusy = signalTurn.tick(heart, turningLocked || gyroBusy, preserveTranslation);
+        autoFacing.tick(heart, turningLocked || gyroBusy || manualBusy, preserveTranslation);
+        propulsion.tick(heart);
+        motionDamping.tick(heart);
     }
-    public void clearRuntime() { if (addonModules != null) addonModules.clear(); armorBilling.clear(); blockInteraction.clear(); damageBoxes.clear(); summonedWeapons.clear(); signalLogic.clear();combatEvents.clear(); surfaceFields.clear(); distortionTrail.clear(); shockwave.clear(); hitCounter.clear();healthAdjustment.clear(); hoverAnchor.clear(); if(audioLevel!=null)audioModules.forEach(id->ModuleAudio.stop(audioLevel,id));audioModules.clear();audioLevel=null; linearMovement.clear(); gyroscope.clear(); signalTurn.clear(); autoFacing.clear(); commands.clear(); hurtTriggers.clear(); combat.clear(); events.clear(); arena.clear(); groundStrike.clear(); sphereBlast.clear(); slash.clear(); laser.clear(); pull.clear();freeze.clear();grab.clear(); quake.clear(); homing.clear(); moveSets.clear(); sequence.clear(); healthPhase.clear(); damageAccumulation.clear(); partBreak.clear(); }
+    public void clearRuntime() { propulsion.clear(); motionDamping.clear(); if (addonModules != null) addonModules.clear(); armorBilling.clear(); blockInteraction.clear(); damageBoxes.clear(); summonedWeapons.clear(); signalLogic.clear();combatEvents.clear(); surfaceFields.clear(); distortionTrail.clear(); shockwave.clear(); hitCounter.clear();healthAdjustment.clear(); hoverAnchor.clear(); if(audioLevel!=null)audioModules.forEach(id->ModuleAudio.stop(audioLevel,id));audioModules.clear();audioLevel=null; commandTarget.clear(); linearMovement.clear(); gyroscope.clear(); signalTurn.clear(); autoFacing.clear(); commands.clear(); messageDisplay.clear(); hurtTriggers.clear(); combat.clear(); events.clear(); arena.clear(); groundStrike.clear(); sphereBlast.clear(); slash.clear(); laser.clear(); pull.clear();freeze.clear();grab.clear(); quake.clear(); homing.clear(); moveSets.clear(); sequence.clear(); healthPhase.clear(); damageAccumulation.clear(); partBreak.clear(); }
     public List<VirtualModule> all() { return List.copyOf(modules); }
     public VirtualModule find(UUID id) { return modules.stream().filter(m -> m.id().equals(id)).findFirst().orElse(null); }
     public int revision() { return revision; }
-    public void changed() { revision++; partBreakModules = null; }
+    public void changed() { revision++; partBreakModules = null; messageModules = null; }
 
     boolean assignGroups(String group, String encodedIds, boolean replaceGroup) {
         if (!ModuleFolders.valid(group) || encodedIds.length() > ModuleNetworking.Action.GROUP_BATCH_TEXT_LIMIT) return false;
@@ -124,11 +140,13 @@ public final class HeartModules {
         if (replaceGroup && (name.isEmpty() || modules.stream().noneMatch(module -> module.group().equals(name)))) return false;
         String[] ids = replaceGroup && encodedIds.isEmpty() ? new String[0] : encodedIds.split(",", LIMIT + 1);
         if (ids.length > LIMIT) return false;
+        var byId = new java.util.HashMap<UUID, VirtualModule>();
+        for (var module : modules) byId.put(module.id(), module);
         var targets = new java.util.LinkedHashSet<VirtualModule>();
         for (String text : ids) {
             if (text.length() != 36) return false;
             try {
-                var module = find(java.util.UUID.fromString(text));
+                var module = byId.get(UUID.fromString(text));
                 if (module == null || !targets.add(module)) return false;
             } catch (IllegalArgumentException invalidId) {
                 return false;
@@ -165,7 +183,7 @@ public final class HeartModules {
     }
     public boolean remove(UUID id) {
         boolean removed=modules.removeIf(m->m.id().equals(id));
-        if(removed){changed();if(owner!=null)reconcileTemplates(owner);}
+        if(removed){messageDisplay.reset(id);changed();if(owner!=null)reconcileTemplates(owner);}
         return removed;
     }
     public boolean reorder(UUID id,int direction){
@@ -182,16 +200,28 @@ public final class HeartModules {
     }
     public CompoundTag phaseRuntime(UUID module){return healthPhase.snapshot(module);}
     public CompoundTag snapshot(HeartBlockEntity heart, boolean editable) {
-        var tag = save();var available=new ListTag();for(String type:ModuleAvailability.available(heart))available.add(net.minecraft.nbt.StringTag.valueOf(type));tag.put("AvailableTypes",available);tag.putInt("ModuleLimit",authoringLimit());tag.putBoolean("ControlCore",heart.isControlCore());tag.putBoolean("SurvivalCore",heart.isSurvivalCore());if(heart.isSurvivalCore())tag.putLong("SurvivalTokens",heart.survivalTokenBalance());tag.putBoolean("ControlReady",heart.operational());if(heart.isControlCore()){var graph=dev.sablelife.compat.sable.SableBodyProbe.inspect(heart.getLevel(),heart.getBlockPos());tag.putString("ControlStatus",!graph.assembled()?"unassembled":graph.otherHearts()>0?"duplicate":heart.wireless().master()?"ready":"paused");} tag.putBoolean("Editable", editable); tag.putString("LifeState", heart.health().state().name());
+        return snapshot(heart, editable, null, false);
+    }
+
+    CompoundTag snapshot(HeartBlockEntity heart, boolean editable, UUID selected, boolean compact) {
+        var tag = new CompoundTag();
+        var list = new ListTag();
+        tag.put("Modules", list);
+        tag.putInt("Revision", revision);
+        if (compact) tag.putBoolean("PartialAuthoring", true);
+        var available=new ListTag();for(String type:ModuleAvailability.available(heart))available.add(net.minecraft.nbt.StringTag.valueOf(type));tag.put("AvailableTypes",available);tag.putInt("ModuleLimit",authoringLimit());tag.putBoolean("ControlCore",heart.isControlCore());tag.putBoolean("SurvivalCore",heart.isSurvivalCore());if(heart.isSurvivalCore())tag.putLong("SurvivalTokens",heart.survivalTokenBalance());tag.putBoolean("ControlReady",heart.operational());if(heart.isControlCore()){var graph=dev.sablelife.compat.sable.SableBodyProbe.inspect(heart.getLevel(),heart.getBlockPos());tag.putString("ControlStatus",!graph.assembled()?"unassembled":graph.otherHearts()>0?"duplicate":heart.wireless().master()?"ready":"paused");} tag.putBoolean("Editable", editable); tag.putString("LifeState", heart.health().state().name());
         tag.putString("HeartName", heart.displayName().getString());
         tag.putDouble("HealthPercent", heart.health().current() / (double) heart.health().maximum() * 100);
         tag.putBoolean("BgmStarted", heart.combatMusicHits() > 0);
         tag.putBoolean("HybridDamage",dev.sablelife.combat.EntityHitboxes.hybrid(heart));
-        var list = tag.getList("Modules", 10);
         for (int i = 0; i < modules.size(); i++) {
-            list.getCompound(i).putString("Status", status(modules.get(i), heart));
-            list.getCompound(i).putBoolean("TriggerPowered", triggered(modules.get(i), heart));
             var module = modules.get(i);
+            boolean detailed = !compact || module.id().equals(selected);
+            var row = detailed ? module.save() : module.dashboardHeader();
+            row.putString("Status", status(module, heart));
+            list.add(row);
+            if (!detailed) continue;
+            row.putBoolean("TriggerPowered", triggered(module, heart));
             if(heart.isSurvivalCore())dev.sablelife.heart.SurvivalTokens.writeEstimate(heart,module,list.getCompound(i));
             if(module.type().equals("entity_hitbox"))list.getCompound(i).putBoolean("ReceiverActive",damageBoxes.entities().stream().anyMatch(e->e.moduleId().equals(module.id())));
             if(module.type().equals("blueprint_spawn"))list.getCompound(i).put("BlueprintSpawn",dev.sablelife.ownership.BlueprintSpawns.snapshot(heart,module));
@@ -241,6 +271,14 @@ public final class HeartModules {
         }
         return tag;
     }
+    static void latchDetachedMark(VirtualModule module, HeartBlockEntity heart) {
+        if (heart.health().state() == dev.sablelife.heart.HeartState.ALIVE && !module.detached()
+                && !heart.blueprintConnectionsSettling() && status(module, heart).equals("disconnected")) {
+            module.detach();
+            heart.setChanged();
+        }
+    }
+
     public static String status(VirtualModule module, HeartBlockEntity heart) {
         if (module.type().indexOf(':') >= 0 && !module.known()) return "unknown";
         if(!ModuleAvailability.enabled(heart,module))return "server_disabled";
@@ -253,6 +291,13 @@ public final class HeartModules {
         if(TargetCastOrigin.targeted(module))return module.enabled()?"valid":"disabled";
         // Whole-creature protection has no dependency on its retained per-part Mark.
         if(module.type().equals("armor")&&module.value("armorWholeBody")==1)return module.enabled()?"valid":"disabled";
+        if (ModuleLinearMovement.worldDestination(module)) {
+            if (heart.modules().linearMovement.hasActiveWorldPlan(module.id())
+                    || heart.getLevel() instanceof net.minecraft.server.level.ServerLevel level
+                    && commandDestination(heart, level)) return module.enabled() ? "valid" : "disabled";
+            if (module.arenaCenter() == null) return "unmarked";
+            return ModuleLinearMovement.hasWorldDestination(heart, module) ? module.enabled() ? "valid" : "disabled" : "unloaded";
+        }
         if (module.invalidated()) return "destroyed";
         if (module.detached()) return "disconnected";
         if (module.type().equals("blueprint_spawn")){if(!dev.sablelife.ownership.BlueprintSpawns.available())return "blueprint_compat";if(dev.sablelife.ownership.BlueprintSpawnPlacement.follows(module)){if(module.anchors().size()!=1)return "unmarked";var mark=module.anchors().getFirst().status(heart);if(!mark.equals("valid"))return mark;}else{if(module.arenaCenter()==null)return "unmarked";if(!heart.getLevel().dimension().location().toString().equals(module.arenaDimension()))return "unloaded";}return module.enabled()?"valid":"disabled";}
@@ -268,8 +313,11 @@ public final class HeartModules {
             if (!state.equals("valid")) return state;
         }
         if (module.coreModule()) return module.enabled() ? "valid" : "disabled";
-        // Mark and external frequency are optional output destinations, not prerequisites for scheduling.
-        if(module.type().equals("wireless_redstone") && module.anchors().isEmpty()) return module.enabled() ? "valid" : "disabled";
+        if (module.type().equals("wireless_redstone")) {
+            String mark = ModuleRedstone.markStatus(heart, module);
+            return mark.equals("valid") && !module.enabled() ? "disabled" : mark;
+        }
+        if (List.of("propulsion","motion_damping").contains(module.type()) && module.anchors().size()!=1) return "unmarked";
         if (module.anchors().isEmpty() || module.area() && module.anchors().size() != 2) return "unmarked";
         if (module.type().equals("part_break") && !ModulePartBreak.validSelection(module, module.anchors())) return "unmarked";
         var addon = ModuleTypes.find(module.type());
@@ -284,6 +332,10 @@ public final class HeartModules {
         }
         return module.enabled() ? "valid" : "disabled";
     }
+    private static boolean commandDestination(HeartBlockEntity heart, net.minecraft.server.level.ServerLevel level) {
+        var order = heart.modules().commandTarget.current(level, CommandTarget.LINEAR_MOVEMENT);
+        return order != null && order.destination() != null;
+    }
     /** Existing wireless channels remain the source of truth for virtual abilities. */
     public static boolean triggered(VirtualModule module, HeartBlockEntity heart) {
         if (!(heart.getLevel() instanceof net.minecraft.server.level.ServerLevel server)
@@ -292,10 +344,11 @@ public final class HeartModules {
     }
     /** Also used for the final hurt event, immediately after health enters its death countdown. */
     public static boolean controlPowered(VirtualModule module, HeartBlockEntity heart) {
-        if (!(heart.getLevel() instanceof net.minecraft.server.level.ServerLevel server) || module.anchors().isEmpty() && !module.type().equals("bgm") && !module.type().equals("arena") && !module.type().equals("blueprint_spawn") && !module.coreModule() && !module.type().equals("wireless_redstone")&&!TargetCastOrigin.targeted(module)) return false;
+        boolean worldDestination = ModuleLinearMovement.worldDestination(module);
+        if (!(heart.getLevel() instanceof net.minecraft.server.level.ServerLevel server) || module.anchors().isEmpty() && !worldDestination && !module.type().equals("bgm") && !module.type().equals("arena") && !module.type().equals("blueprint_spawn") && !module.coreModule() && !module.type().equals("wireless_redstone")&&!TargetCastOrigin.targeted(module)) return false;
         boolean powered = switch ((int) module.value("trigger")) {
             case 0 -> true;
-            case 1 -> (module.coreModule() || module.type().equals("arena") || module.type().equals("blueprint_spawn") || TargetCastOrigin.targeted(module) || module.anchors().isEmpty()) ? dev.sablelife.attack.ModulePower.hasControlSignal(server, heart.getBlockPos()) : module.importData().getBoolean("LegacyPower")
+            case 1 -> module.type().equals("wireless_redstone") ? ModuleRedstone.anchorPower(heart, module) > 0 : (worldDestination || module.coreModule() || module.type().equals("arena") || module.type().equals("blueprint_spawn") || TargetCastOrigin.targeted(module) || module.anchors().isEmpty()) ? dev.sablelife.attack.ModulePower.hasControlSignal(server, heart.getBlockPos()) : module.importData().getBoolean("LegacyPower")
                     ? dev.sablelife.attack.ModulePower.hasSignal(server, module.anchors().getFirst().position(module.anchors().getFirst().body(heart)))
                     : dev.sablelife.attack.ModulePower.hasControlSignal(server, module.anchors().getFirst().position(module.anchors().getFirst().body(heart)));
             case 2 -> heart.wireless().output((int) module.value("channel")) > 0;
@@ -309,10 +362,11 @@ public final class HeartModules {
     public void load(CompoundTag tag) {
         clearRuntime();
         templateRevision=Integer.MIN_VALUE;templateCreature=null;
-        modules.clear(); partBreakModules = null; revision = tag.getInt("Revision"); var list = tag.getList("Modules", 10);
+        modules.clear(); partBreakModules = null; messageModules = null; revision = tag.getInt("Revision"); var list = tag.getList("Modules", 10);
+        var loadedIds = new java.util.HashSet<UUID>();
         for (int i = 0; i < Math.min(LIMIT, list.size()); i++) {
             if(list.getCompound(i).getString("Type").equals("dispatch"))continue; // Removed standalone scheduler, not a move row.
-            var module = VirtualModule.load(list.getCompound(i)); if (find(module.id()) == null) modules.add(module);
+            var module = VirtualModule.load(list.getCompound(i)); if (loadedIds.add(module.id())) modules.add(module);
         }
         // Preserve old embedded music settings by moving them to a core-centered module.
         for (int i = 0; i < Math.min(LIMIT, list.size()); i++) {

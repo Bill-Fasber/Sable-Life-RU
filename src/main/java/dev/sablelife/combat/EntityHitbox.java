@@ -31,6 +31,9 @@ public final class EntityHitbox extends Mob {
     @Override public boolean canBeAffected(MobEffectInstance effect){return false;}
     @Override public boolean addEffect(MobEffectInstance effect,Entity source){return false;}
     @Override public void forceAddEffect(MobEffectInstance effect,Entity source){}
+    // Ignore ignition timers while continuing to accept direct fire damage through hurt().
+    @Override public void setRemainingFireTicks(int ticks){super.setRemainingFireTicks(Math.min(ticks,0));}
+    @Override public boolean isOnFire(){return false;}
     public void queryBounds(HitboxQueryBounds bounds){
         if(queryBounds!=bounds){
             if(largeQueryBounds)queryBounds.removedLargeReceiver();

@@ -12,6 +12,60 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 
 @GameTestHolder("sablelife_core_ui_tests") @PrefixGameTestTemplate(false)
 public final class ServerConfigGameTests {
+    @GameTest(template = "combat", batch = "server_module_switch_defaults")
+    public static void NewModuleSwitchesPreserveExistingConfig(GameTestHelper h) {
+        var config = new TomlParser().parse("""
+                maximumModulesPerCreature = 128
+                [modules]
+                disabledAddonModules = ["example:old"]
+                [modules.heartCore]
+                message_display = false
+                [modules.survivalHeartCore]
+                armor = false
+                [modules.redstoneCore]
+                linear_movement = false
+                """);
+        SableLifeServerConfig.LOADER_SPEC.correct(config);
+        h.assertTrue(SableLifeServerConfig.LOADER_SPEC.isCorrect(config), "Upgraded config still needs correction");
+        h.assertTrue(java.util.List.of("example:old").equals(config.get("modules.disabledAddonModules")),
+                "Upgrade lost global exclusions");
+        for (String core : java.util.List.of("heartCore", "redstoneCore", "survivalHeartCore")) {
+            h.assertTrue(java.util.List.of().equals(config.get("modules." + core + ".disabledAddonModules")),
+                    "Per-core addon list did not default to empty");
+        }
+        for (String setting : java.util.List.of("heartCore.message_display", "survivalHeartCore.armor",
+                "redstoneCore.linear_movement", "survivalHeartCore.message_display")) {
+            h.assertTrue(Boolean.FALSE.equals(config.get("modules." + setting)), "Wrong effective setting for " + setting);
+        }
+        var reloaded = new TomlParser().parse(new com.electronwill.nightconfig.toml.TomlWriter().writeToString(config));
+        h.assertTrue(SableLifeServerConfig.LOADER_SPEC.isCorrect(reloaded) && config.valueMap().equals(reloaded.valueMap()),
+                "Writing and reloading changed the upgraded config");
+        h.assertTrue(reloaded.getInt("maximumModulesPerCreature") == 128, "Upgrade overwrote the configured module limit");
+        reloaded.remove("maximumModulesPerCreature");
+        SableLifeServerConfig.LOADER_SPEC.correct(reloaded);
+        h.assertTrue(reloaded.getInt("maximumModulesPerCreature") == 256, "Missing module limit did not use the new default");
+        reloaded.set("maximumModulesPerCreature", 1024);
+        h.assertTrue(SableLifeServerConfig.LOADER_SPEC.isCorrect(reloaded), "Config rejected the expanded limit");
+        h.succeed();
+    }
+
+    @GameTest(template="combat",batch="remote_claim_config_upgrade")
+    public static void OldConfigKeepsValuesAndDefaultsUnsupportedClaimsToOff(GameTestHelper h) {
+        var config = new TomlParser().parse("maximumModulesPerCreature = 128\nallowEditHeartCoreUnderSurvivalMode = true\n");
+        SableLifeServerConfig.LOADER_SPEC.correct(config);
+        h.assertTrue(Boolean.FALSE.equals(config.get("allowCoreRemoteWithUnsupportedClaims")), "Old config did not default to protected access");
+        h.assertTrue(config.getInt("maximumModulesPerCreature") == 128
+                && Boolean.TRUE.equals(config.get("allowEditHeartCoreUnderSurvivalMode")), "Adding the switch changed existing settings");
+        config.set("allowCoreRemoteWithUnsupportedClaims", true);
+        var writer = new com.electronwill.nightconfig.toml.TomlWriter();
+        var reloaded = new TomlParser().parse(writer.writeToString(config));
+        SableLifeServerConfig.LOADER_SPEC.correct(reloaded);
+        SableLifeServerConfig.LOADER_SPEC.correct(reloaded);
+        h.assertTrue(SableLifeServerConfig.LOADER_SPEC.isCorrect(reloaded)
+                && Boolean.TRUE.equals(reloaded.get("allowCoreRemoteWithUnsupportedClaims")), "Saving/reloading or repeated correction reset explicit opt-in");
+        h.succeed();
+    }
+
     @GameTest(template="combat",batch="server_config_spacing")
     public static void SpacingPreservesValuesAndDoesNotGrowOnReload(GameTestHelper h){
         String source="# First\nfirst = 1\n# Second\n# Range\nsecond = 2\n[modules]\narmor = true\nlaser = false\n";
@@ -27,6 +81,15 @@ public final class ServerConfigGameTests {
         h.assertTrue(ServerConfigSpacing.format(array).contains("]\r\n\r\n# Next"),"Array or line ending spacing failed");
         String literal="text = \"\"\"\nfirst = 1\n# This belongs to the string\n\"\"\"\nvalue = 2\n";
         h.assertTrue(ServerConfigSpacing.format(literal).equals(literal),"Formatting altered a multiline string value");
+        String moduleLimit = "# Module limit\r\nmaximumModulesPerCreature = 128\r\n";
+        String annotated = ServerConfigSpacing.format(moduleLimit);
+        h.assertTrue(annotated.contains("maximumModulesPerCreature = 128 # Cores with more modules")
+                && annotated.endsWith(".\r\n"), "Expected an inline note with CRLF preserved");
+        h.assertTrue(new TomlParser().parse(annotated).getInt("maximumModulesPerCreature") == 128,
+                "The inline note changed the configured module limit");
+        h.assertTrue(ServerConfigSpacing.format(annotated).equals(annotated), "The inline note repeated on reload");
+        String customNote = "maximumModulesPerCreature = 1024 # Server admin note\n";
+        h.assertTrue(ServerConfigSpacing.format(customNote).equals(customNote), "Formatting replaced a server admin note");
         h.succeed();
     }
 

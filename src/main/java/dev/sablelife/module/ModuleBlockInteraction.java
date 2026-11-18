@@ -43,12 +43,12 @@ final class ModuleBlockInteraction {
         }
     }
 
-    private record Area(Vec3 point, BlockPos min, BlockPos max, Direction face,
+    record Area(Vec3 point, BlockPos min, BlockPos max, Direction face,
                         dev.ryanhcode.sable.sublevel.SubLevel body) {
         Vec3 world(Vec3 point){return body==null?point:body.logicalPose().transformPosition(point);}
     }
 
-    private static Area area(HeartBlockEntity core, VirtualModule module) {
+    static Area area(HeartBlockEntity core, VirtualModule module) {
         var anchor=module.anchors().getFirst();
         var body=anchor.body(core);
         var normal=Vec3.atLowerCornerOf(anchor.face().getNormal());

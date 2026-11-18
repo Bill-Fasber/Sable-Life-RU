@@ -3,6 +3,7 @@ package dev.sablelife.testing;
 import dev.sablelife.SableLife;
 import dev.sablelife.SableLifeServerConfig;
 import dev.sablelife.heart.HeartBlockEntity;
+import dev.sablelife.module.HeartModules;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
@@ -47,6 +48,37 @@ public final class DataCopierGameTests {
         var saved=core.saveWithoutMetadata(core.getLevel().registryAccess());
         saved.putFloat("Health",current);saved.putLong("SurvivalTokens",energy);
         core.loadWithComponents(saved,core.getLevel().registryAccess());
+    }
+
+    @GameTest(template="combat", batch="copier_capacity")
+    public static void CopierCarriesMaximumModuleList(GameTestHelper h) {
+        var source = core(h, SableLife.HEART.get(), 2);
+        var target = core(h, SableLife.HEART.get(), 5);
+        var entries = new net.minecraft.nbt.ListTag();
+        for (int i = 0; i < HeartModules.LIMIT; i++) {
+            var module = new dev.sablelife.module.VirtualModule("item_display");
+            module.edit("name", 0, "Display " + i);
+            module.edit("displaySize", 0.75, "");
+            entries.add(module.save());
+        }
+        var saved = new CompoundTag();
+        saved.put("Modules", entries);
+        source.modules().load(saved);
+        var player = player(h, GameType.CREATIVE);
+        h.assertTrue(use(player, source) == InteractionResult.CONSUME, "Copier rejected the full source core");
+        var buffer = new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), h.getLevel().registryAccess());
+        try {
+            ItemStack.OPTIONAL_STREAM_CODEC.encode(buffer, player.getMainHandItem());
+            System.out.println("MODULE_CAPACITY_COPIER_BYTES=" + buffer.readableBytes());
+            player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.OPTIONAL_STREAM_CODEC.decode(buffer));
+        } finally {
+            buffer.release();
+        }
+        h.assertTrue(use(player, target) == InteractionResult.CONSUME, "Copier rejected the full clipboard");
+        var pasted = target.modules().all();
+        h.assertTrue(pasted.size() == HeartModules.LIMIT && pasted.getLast().name().equals("Display " + (HeartModules.LIMIT - 1))
+                && pasted.getLast().value("displaySize") == 0.75, "Paste lost the last module or its settings");
+        h.succeed();
     }
 
     @GameTest(template="combat")

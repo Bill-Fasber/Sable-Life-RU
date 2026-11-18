@@ -25,13 +25,116 @@ public final class BlueprintSpawnClientPreview {
     private static Screen panel;private static int ticks,index=Integer.getInteger("sablelife.blueprintPreviewStart",0);private static boolean started;
     private static Component helpPreview;private static int helpX,helpY;
     private static java.util.concurrent.CompletableFuture<?> languageReload;
+    private static final String LONG_BLUEPRINT = "A_very_long_server_blueprint_name_for_a_large_mechanical_structure_0123456789";
+    private static final String WIDE_BLUEPRINT = "大型机械生命体蓝图名称".repeat(5);
     private static final class Host extends Screen {Host(){super(Component.empty());}@Override protected void init(){panel.init(minecraft,width,height);}@Override public void render(GuiGraphics g,int x,int y,float p){panel.render(g,-100,-100,p);if(helpPreview!=null&&ticks>=15)g.renderTooltip(minecraft.font,Tooltip.splitTooltip(minecraft,helpPreview),helpX,helpY);}}
     private static void set(String key,Object value)throws Exception{var f=panel.getClass().getDeclaredField(key);f.setAccessible(true);f.set(panel,value);}
     private static Object get(String key)throws Exception{var f=panel.getClass().getDeclaredField(key);f.setAccessible(true);return f.get(panel);}
-    private static void build()throws Exception{if(index>=20){buildWild();return;}var mc=Minecraft.getInstance();mc.options.guiScale().set(index/5+1);mc.resizeDisplay();var inv=new Inventory(null);var modules=new HeartModules();var module=modules.add("blueprint_spawn");module.edit("spawnPosition",index%2,"");var tag=modules.save();tag.putBoolean("Ready",true);tag.putBoolean("Editable",true);tag.putBoolean("RespawnAllowed",true);tag.putUUID("Selected",module.id());var files=new ListTag();for(int i=0;i<20;i++)files.add(StringTag.valueOf("boss_stage_"+(i+1)));tag.put("BlueprintFiles",files);var data=new CompoundTag();data.putBoolean("Available",true);data.putBoolean("CanPreview",true);data.putString("Name","boss_stage_2");data.putString("Phase","ready");data.putString("Position","32.5, 70.5, -18.5");data.putInt("Life",index%5==1?0:index%5==3?2:1);data.putInt("Blocks",1280);data.putBoolean("CanActivate",index%5!=1&&index%5!=3);tag.getList("Modules",10).getCompound(0).put("BlueprintSpawn",data);
+    private static void build()throws Exception{if(index>=56){buildArena();return;}if(index>=20){buildWild();return;}var mc=Minecraft.getInstance();mc.options.guiScale().set(index/5+1);mc.resizeDisplay();var inv=new Inventory(null);var modules=new HeartModules();var module=modules.add("blueprint_spawn");module.edit("spawnPosition",index%2,"");boolean canActivate=index%5!=1&&index%5!=3;if(!canActivate)module.edit("spawnActivate",0,"");var tag=modules.save();tag.putBoolean("Ready",true);tag.putBoolean("Editable",true);tag.putBoolean("RespawnAllowed",true);tag.putUUID("Selected",module.id());tag.put("BlueprintFiles",blueprintFiles());var data=new CompoundTag();data.putBoolean("Available",true);data.putBoolean("CanPreview",true);data.putString("Name","boss_stage_2");data.putString("Phase","ready");data.putString("Position","32.5, 70.5, -18.5");data.putInt("Life",index%5==1?0:index%5==3?2:1);data.putInt("Blocks",1280);data.putBoolean("CanActivate",canActivate);tag.getList("Modules",10).getCompound(0).put("BlueprintSpawn",data);
         var menu=new HeartDashboardMenu(1,inv);var paper=new ItemStack(Items.PAPER);paper.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(paper);
         if(index%5==0)panel=new HeartDashboardScreen(menu,inv,Component.empty());else if(index%5<4){panel=new BlueprintSpawnScreen(new Screen(Component.empty()){},menu,module.id());set("requested",true);}else{var settings=new HeartSettingsMenu(1,inv);var names=new CoreRelations();names.exclude("Offline_User");var s=new CompoundTag();s.putBoolean("Ready",true);s.putBoolean("LiveControls",true);s.put("Relations",names.save());var item=new ItemStack(Items.PAPER);item.set(DataComponents.CUSTOM_DATA,CustomData.of(s));settings.getSlot(0).set(item);panel=new CoreRelationsScreen(new Screen(Component.empty()){},settings);}
         mc.setScreen(new Host());
+    }
+
+    private static ListTag blueprintFiles() {
+        var files = new ListTag();
+        files.add(StringTag.valueOf(WIDE_BLUEPRINT));
+        for (int i = 46; i > 0; i--) files.add(StringTag.valueOf(String.format(Locale.ROOT, "boss_stage_%02d", i)));
+        files.add(StringTag.valueOf(LONG_BLUEPRINT));
+        return files;
+    }
+
+    private static void checkBlueprintPicker() throws Exception {
+        var mc = Minecraft.getInstance();
+        var menu = (HeartDashboardMenu) get("menu");
+        var snapshot = menu.snapshot();
+        var names = snapshot.getList("BlueprintFiles", 8).stream().map(Tag::getAsString)
+                .sorted(String.CASE_INSENSITIVE_ORDER.thenComparing(Comparator.naturalOrder())).toList();
+        var input = panel.children().stream().filter(EditBox.class::isInstance).map(EditBox.class::cast).findFirst().orElseThrow();
+        input.setValue(LONG_BLUEPRINT);
+        if (!button("blueprint_spawn.sablelife.load").active || !button("blueprint_spawn.sablelife.clear").active)
+            throw new AssertionError("Configured, editable blueprint is missing Load or Clear");
+        boolean canActivate = snapshot.getList("Modules", 10).getCompound(0).getCompound("BlueprintSpawn").getBoolean("CanActivate");
+        checkBlueprintActivation(canActivate, canActivate);
+
+        var seen = new ArrayList<String>();
+        var rowsPerColumn = 0L;
+        int pages = 0;
+        for (;;) {
+            var previous = pager("‹");
+            var next = pager("›");
+            if (previous.active != (pages > 0)) throw new AssertionError("Incorrect previous button state");
+            var choices = blueprintButtons(names);
+            for (var choice : choices) {
+                if (choice.getY() + choice.getHeight() > previous.getY() || choice.getTooltip() == null)
+                    throw new AssertionError("Blueprint row overlaps pagination or has no name tooltip");
+                seen.add(choice.getMessage().getString());
+            }
+            if (++pages == 1) {
+                var columns = choices.stream().map(Button::getX).distinct().toList();
+                if (columns.size() != 3 || !next.active || choices.stream().map(Button::getWidth).distinct().count() > 2)
+                    throw new AssertionError("Blueprint list does not use 3 nearly even columns and pagination");
+                rowsPerColumn = choices.stream().filter(b -> b.getX() == columns.getFirst()).count();
+                if (rowsPerColumn < 1 || choices.size() != rowsPerColumn * 3)
+                    throw new AssertionError("Blueprint columns did not fill before pagination");
+            }
+            if (!next.active) break;
+            click(next);
+        }
+        if (!seen.equals(names)) throw new AssertionError("Blueprint pages lost, repeated or misordered a full file name");
+
+        // Clearing the server snapshot must leave an empty catalog on its first page after a resize.
+        var shortened = snapshot.copy();
+        shortened.put("BlueprintFiles", new ListTag());
+        shortened.getList("Modules", 10).getCompound(0).getCompound("BlueprintSpawn").putString("Name", "");
+        var paper = new ItemStack(Items.PAPER);
+        paper.set(DataComponents.CUSTOM_DATA, CustomData.of(shortened));
+        menu.getSlot(0).set(paper);
+        panel.tick();
+        panel.resize(mc, panel.width - 16, panel.height - 12);
+        var resizedInput = panel.children().stream().filter(EditBox.class::isInstance).map(EditBox.class::cast).findFirst().orElseThrow();
+        if (pager("‹").active || pager("›").active || !blueprintButtons(names).isEmpty()
+                || button("blueprint_spawn.sablelife.clear").active || !resizedInput.getValue().equals(LONG_BLUEPRINT))
+            throw new AssertionError("Empty list, Clear or file draft did not synchronize across refresh and resize");
+        checkBlueprintActivation(canActivate, true);
+        paper = new ItemStack(Items.PAPER);
+        paper.set(DataComponents.CUSTOM_DATA, CustomData.of(snapshot));
+        menu.getSlot(0).set(paper);
+        panel.tick();
+        panel.resize(mc, mc.getWindow().getGuiScaledWidth(), mc.getWindow().getGuiScaledHeight());
+        if (!blueprintButtons(names).getFirst().getMessage().getString().equals(LONG_BLUEPRINT)
+                || pager("‹").active || !pager("›").active || !button("blueprint_spawn.sablelife.clear").active)
+            throw new AssertionError("Restored list did not reopen on the first page");
+        System.out.println("BLUEPRINT_PICKER_GRID_PASS language=" + mc.options.languageCode
+                + " scale=" + mc.options.guiScale().get() + " rows=" + rowsPerColumn + " pages=" + pages);
+    }
+
+    private static List<Button> blueprintButtons(List<String> names) {
+        return panel.children().stream().filter(Button.class::isInstance).map(Button.class::cast)
+                .filter(b -> b.visible && names.contains(b.getMessage().getString()))
+                .sorted(Comparator.comparingInt(Button::getX).thenComparingInt(Button::getY)).toList();
+    }
+
+    private static Button button(String key) {
+        return pager(Component.translatable(key).getString());
+    }
+
+    private static void checkBlueprintActivation(boolean on, boolean editable) throws Exception {
+        var toggle = button("dashboard.sablelife.choice_" + (on ? "on" : "off"));
+        var fill = toggle.getClass().getDeclaredField("fill");
+        fill.setAccessible(true);
+        if (toggle.active != editable || fill.getInt(toggle) != (on ? 0xFF24583D : 0))
+            throw new AssertionError("Blueprint activation control did not match the server selection or use the enabled color");
+    }
+
+    private static Button pager(String label) {
+        return panel.children().stream().filter(Button.class::isInstance).map(Button.class::cast)
+                .filter(b -> b.visible && b.getMessage().getString().equals(label)).findFirst().orElseThrow();
+    }
+
+    private static void click(Button button) {
+        if (!panel.mouseClicked(button.getX() + button.getWidth() / 2.0, button.getY() + button.getHeight() / 2.0, 0))
+            throw new AssertionError("Blueprint pagination button did not handle a click");
     }
     private static void buildWild() throws Exception {
         if(index>=36){buildCoreHeader();return;}
@@ -185,6 +288,107 @@ public final class BlueprintSpawnClientPreview {
         }
     }
 
+    private static void buildArena() {
+        helpPreview = null;
+        var mc = Minecraft.getInstance();
+        mc.options.guiScale().set(index < 58 ? 1 : 4);
+        mc.resizeDisplay();
+        var modules = new HeartModules();
+        var arena = modules.add("arena");
+        arena.edit("arenaDeath", index % 2, "");
+        arena.edit("arenaPlayerDeathCountdown", 240, "");
+        arena.edit("arenaRespawnEnabled", 1, "");
+        arena.edit("arenaRespawnBattleTimer", index % 2, "");
+        arena.edit(ArenaBattleTitle.ENABLED_KEY, index % 2, "");
+        arena.edit(ArenaBattleTitle.DISPLAY_KEY, index >= 58 ? ArenaBattleTitle.CHAT_DISPLAY : 0, "");
+        var snapshot = modules.save();
+        snapshot.putBoolean("Ready", true);
+        snapshot.putBoolean("Editable", true);
+        snapshot.putBoolean("RespawnAllowed", true);
+        snapshot.putUUID("Selected", arena.id());
+        var module = snapshot.getList("Modules", 10).getCompound(0);
+        module.putString("Status", "valid");
+        var runtime = new CompoundTag();
+        runtime.putBoolean("Available", true);
+        runtime.putBoolean("Recorded", true);
+        module.put("RespawnRuntime", runtime);
+        var inventory = new Inventory(null);
+        var menu = new HeartDashboardMenu(1, inventory);
+        var paper = new ItemStack(Items.PAPER);
+        paper.set(DataComponents.CUSTOM_DATA, CustomData.of(snapshot));
+        menu.getSlot(0).set(paper);
+        panel = new HeartDashboardScreen(menu, inventory, Component.empty());
+        mc.setScreen(new Host());
+    }
+
+    private static void checkArena() throws Exception {
+        var fields = (List<ModuleFields.Field>) get("parameters");
+        var keys = fields.stream().map(ModuleFields.Field::key).toList();
+        boolean death = index % 2 == 1;
+        if (keys.contains("arenaPlayerDeathCountdown") != death || !keys.contains("countdown"))
+            throw new AssertionError("Arena warning or player-death countdown visibility does not match its setting");
+        if (!keys.contains("arenaRespawnBattleTimer") || keys.contains("arenaRespawnBattleLimit") != death)
+            throw new AssertionError("Arena battle timer visibility does not match its setting");
+        for (String key : List.of("type_arena", "arenaRadius", "warningRange", "countdown", "arenaDeath", "arenaPlayerDeathCountdown")) {
+            var translationKey = "dashboard.sablelife." + key;
+            var label = Component.translatable(translationKey).getString();
+            if (label.isBlank() || label.equals(translationKey)) throw new AssertionError("Missing Arena label " + key);
+        }
+        checkArenaNumber(fields, "arenaRadius", 48, 8);
+        checkArenaNumber(fields, "warningRange", 64, 8);
+        if (death) checkArenaNumber(fields, "arenaPlayerDeathCountdown", 12, 5);
+        if (death) checkArenaNumber(fields, "arenaRespawnBattleLimit", 300, 5);
+        if (keys.contains(ArenaBattleTitle.ENABLED_KEY) != death || keys.contains(ArenaBattleTitle.DISPLAY_KEY) != death)
+            throw new AssertionError("Battle reminder controls have incorrect visibility");
+        if (death) {
+            int slot = arenaFieldSlot(fields, ArenaBattleTitle.DISPLAY_KEY);
+            var button = ((List<Button>) get("choices")).get(slot);
+            String expected = Component.translatable("dashboard.sablelife.choice_arena_" + (index >= 58 ? "chat" : "title")).getString();
+            if (!button.active || !button.visible || !button.getMessage().getString().equals(expected)
+                    || Minecraft.getInstance().font.width(expected) > button.getWidth() - 8)
+                throw new AssertionError("Battle reminder display is missing or clipped: " + button.getMessage());
+        }
+        for (var title : ArenaBattleTitle.values()) {
+            if (keys.contains(title.key()) != death) throw new AssertionError("Title input visibility is wrong for " + title.key());
+            if (death) {
+                var box = arenaInput(fields, title.key());
+                String value = box.getValue();
+                if (!box.visible || !box.active || !value.equals(title.example())
+                        || !value.contains("{time}") || value.contains("arena_battle_title")
+                        || Minecraft.getInstance().font.width(value) > box.getWidth() - 8)
+                    throw new AssertionError("Title input is missing its localized example: " + value);
+            }
+        }
+        var mc = Minecraft.getInstance();
+        System.out.println("ARENA_COUNTDOWN_UI_PASS language=" + mc.options.languageCode
+                + " scale=" + mc.options.guiScale().get() + " death=" + death);
+    }
+
+    private static void checkArenaNumber(List<ModuleFields.Field> fields, String key, double value, double step) throws Exception {
+        var field = fields.stream().filter(f -> f.key().equals(key)).findFirst().orElseThrow();
+        var box = arenaInput(fields, key);
+        if (!box.visible || !box.active || Double.parseDouble(box.getValue()) != value
+                || NumericWheelSteps.module("arena", key, field.scale(), field.min()) != step)
+            throw new AssertionError("Wrong Arena numeric display or wheel increment for " + key);
+    }
+
+    private static EditBox arenaInput(List<ModuleFields.Field> fields, String key) throws Exception {
+        var inputs = (List<EditBox>) get("fields");
+        return inputs.get(arenaFieldSlot(fields, key));
+    }
+
+    private static int arenaFieldSlot(List<ModuleFields.Field> fields, String key) throws Exception {
+        int fieldsPerPage = (int) get("parameterSlots");
+        int position = fields.stream().map(ModuleFields.Field::key).toList().indexOf(key);
+        var sync = HeartDashboardScreen.class.getDeclaredMethod("sync");
+        sync.setAccessible(true);
+        for (int page = (int) get("parameterPage"); page < position / fieldsPerPage; page++) {
+            click((Button) get("nextParameters"));
+            sync.invoke(panel);
+        }
+        return position % fieldsPerPage;
+    }
+
     private static void checkDensity()throws Exception{
         if(index>=36){checkCoreHeader();return;}
         var fields=(Map<String,EditBox>)get("numbers");var checks=(Map<String,Button>)get("numberChecks");
@@ -200,5 +404,5 @@ public final class BlueprintSpawnClientPreview {
         if(!fields.get("MinDistance").getValue().equals("24")||!fields.get("SearchAttempts").getValue().equals("4"))throw new AssertionError("Switching pages lost density drafts");
     }
     private static void check()throws Exception{if(index>=32){checkDensity();return;}for(var child:panel.children())if(child instanceof AbstractWidget w&&w.visible&&(w.getX()<0||w.getY()<0||w.getX()+w.getWidth()>panel.width||w.getY()+w.getHeight()>panel.height))throw new AssertionError("Blueprint UI outside viewport at "+index);if(index>=20){checkWildRuleControls((index-20)%3);if((index-20)%3==2){var release=(Button)get("release");release.onPress();if(!(boolean)get("releaseAfterSpawn")||!release.getMessage().getString().contains("✓"))throw new AssertionError("Release checkbox did not turn on");var fields=(Map<String,EditBox>)get("numbers");if(fields.get("Lifetime").active||fields.get("AbsenceSeconds").active||fields.get("MaxActive").active)throw new AssertionError("Release retained managed cleanup controls");release.onPress();if((boolean)get("releaseAfterSpawn")||!fields.get("Lifetime").active||!fields.get("AbsenceSeconds").active||!fields.get("MaxActive").active)throw new AssertionError("Release checkbox did not restore controls");var clearing=(Button)get("treesButton");clearing.onPress();if(!(boolean)get("clearObstacles")||((Button)get("ignoreButton")).active)throw new AssertionError("Full obstacle clearing did not override empty-volume check");clearing.onPress();if((boolean)get("clearObstacles")||!((Button)get("ignoreButton")).active)throw new AssertionError("Clearing toggle did not restore controls");var search=(EditBox)get("search");search.setValue("minecraft:forest");var options=(List<Button>)get("choices");var forest=options.getFirst();if(!forest.visible||!forest.getMessage().getString().contains(Component.translatable("biome.minecraft.forest").getString())||!forest.mouseClicked(forest.getX()+2,forest.getY()+2,1)||!((Set<?>)get("allowed")).contains("minecraft:forest"))throw new AssertionError("Biome search or right-click selection failed");}return;}if(index%5==0){var fields=(List<ModuleFields.Field>)get("parameters");int at=-1;for(int i=0;i<fields.size();i++)if(fields.get(i).key().equals("spawnActivate"))at=i;if(at>=0){int slots=(int)get("parameterSlots");int page=(int)get("parameterPage");if(at/slots==page&&!((List<Button>)get("choices")).get(at%slots).active)throw new AssertionError("Single life template auto activation unavailable");}}if(index%5==4){var inputs=panel.children().stream().filter(c->c instanceof EditBox).toList();if(inputs.size()!=1)throw new AssertionError("Player name entry missing");}}
-    @SubscribeEvent public static void tick(ClientTickEvent.Post event)throws Exception{if(!Boolean.getBoolean("sablelife.blueprintSpawnPreview"))return;var mc=Minecraft.getInstance();if(!started){if(mc.screen==null||mc.getOverlay()!=null||languageReload!=null&&!languageReload.isDone())return;var language=System.getProperty("sablelife.blueprintPreviewLanguage","en_us");if(!mc.options.languageCode.equals(language)){mc.getLanguageManager().setSelected(language);mc.options.languageCode=language;languageReload=mc.reloadResourcePacks();return;}started=true;build();return;}if(++ticks==14){check();if(index<5||index>=20){var dir=mc.gameDirectory.toPath().resolve("screenshots");java.nio.file.Files.createDirectories(dir);try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(dir.resolve("blueprint-"+index+".png"));}}}if(ticks==15&&index==31)((Button)get("release")).onPress();if(ticks==17&&index==31){try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(mc.gameDirectory.toPath().resolve("screenshots/wild-release-enabled.png"));}((Button)get("release")).onPress();}if(ticks==18){ticks=0;if(++index==Integer.getInteger("sablelife.blueprintPreviewEnd",56)){System.out.println("BLUEPRINT_UI_PASS range="+Integer.getInteger("sablelife.blueprintPreviewStart",0)+".."+index);mc.stop();}else build();}}
+    @SubscribeEvent public static void tick(ClientTickEvent.Post event)throws Exception{if(!Boolean.getBoolean("sablelife.blueprintSpawnPreview"))return;var mc=Minecraft.getInstance();if(!started){if(mc.screen==null||mc.getOverlay()!=null||languageReload!=null&&!languageReload.isDone())return;var language=System.getProperty("sablelife.blueprintPreviewLanguage","en_us");if(!mc.options.languageCode.equals(language)){mc.getLanguageManager().setSelected(language);mc.options.languageCode=language;languageReload=mc.reloadResourcePacks();return;}started=true;build();return;}if(++ticks==14){if(index>=56)checkArena();else check();if(panel instanceof BlueprintSpawnScreen)checkBlueprintPicker();}if(ticks==15&&(index<5||index>=20||panel instanceof BlueprintSpawnScreen)){var dir=mc.gameDirectory.toPath().resolve("screenshots");java.nio.file.Files.createDirectories(dir);try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(dir.resolve("blueprint-"+index+".png"));}}if(ticks==15&&index==31)((Button)get("release")).onPress();if(ticks==17&&index==31){try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(mc.gameDirectory.toPath().resolve("screenshots/wild-release-enabled.png"));}((Button)get("release")).onPress();}if(ticks==18){ticks=0;if(++index==Integer.getInteger("sablelife.blueprintPreviewEnd",56)){System.out.println("BLUEPRINT_UI_PASS range="+Integer.getInteger("sablelife.blueprintPreviewStart",0)+".."+index);mc.stop();}else build();}}
 }

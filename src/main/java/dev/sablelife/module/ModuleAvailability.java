@@ -11,15 +11,17 @@ import java.util.stream.Stream;
 public final class ModuleAvailability {
     public static boolean enabled(boolean redstoneCore,String type){
         var addon = ModuleTypes.find(type);
-        if (addon != null) return addon.cores().contains(redstoneCore ? Core.REDSTONE : Core.HEART)
-                && SableLifeServerConfig.addonModuleEnabled(type);
+        if (addon != null) {
+            var core = redstoneCore ? Core.REDSTONE : Core.HEART;
+            return addon.cores().contains(core) && SableLifeServerConfig.addonModuleEnabled(type, core);
+        }
         return (redstoneCore?RedstoneCorePolicy.TYPES:VirtualModule.AVAILABLE_TYPES).contains(type)
                 &&SableLifeServerConfig.moduleEnabled(redstoneCore,type);
     }
     public static boolean enabled(HeartBlockEntity heart,String type){
         if (heart.isSurvivalCore()) {
             var addon = ModuleTypes.find(type);
-            if (addon != null) return addon.cores().contains(Core.SURVIVAL) && SableLifeServerConfig.addonModuleEnabled(type);
+            if (addon != null) return addon.cores().contains(Core.SURVIVAL) && SableLifeServerConfig.addonModuleEnabled(type, Core.SURVIVAL);
         }
         return heart.isSurvivalCore()?SableLifeServerConfig.survivalModuleEnabled(type):enabled(heart.isControlCore(),type);
     }

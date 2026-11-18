@@ -3,23 +3,33 @@ package dev.sablelife.module;
 import dev.ryanhcode.sable.Sable;
 import dev.sablelife.heart.HeartBlockEntity;
 import net.minecraft.core.BlockPos;
+import dev.sablelife.module.ArmorRules.HitType;
 
 /** Resolve per-part rules or an explicitly enabled whole-creature modifier, without stacking. */
 public final class ModuleArmor {
     public static final double SURVIVAL_MAX_REDUCTION=90;
     public static float damage(HeartBlockEntity heart, BlockPos hit, float amount) {
+        return damage(heart, hit, amount, false);
+    }
+
+    public static float damage(HeartBlockEntity heart, BlockPos hit, float amount, boolean projectileHit) {
+        return damage(heart, hit, amount, projectileHit ? HitType.PROJECTILE : HitType.OTHER);
+    }
+
+    public static float damage(HeartBlockEntity heart, BlockPos hit, float amount, HitType hitType) {
         if (!Float.isFinite(amount) || amount <= 0) return 0;
         var body = Sable.HELPER.getContaining(heart.getLevel(), hit);
         if (body == null || body.isRemoved()) return amount;
         double modifier = Double.POSITIVE_INFINITY;Boolean ownWholeHit=null;
         for (var module : heart.modules().all()) {
-            if (!module.type().equals("armor") || !HeartModules.triggered(module, heart)) continue;
+            if (!module.type().equals("armor") || (hitType != HitType.PROJECTILE && module.value("armorProjectileOnly") == 1)
+                    || !HeartModules.triggered(module, heart)) continue;
             if(module.value("armorWholeBody")==1){
                 if(ownWholeHit==null){var core=Sable.HELPER.getContaining(heart.getLevel(),heart.getBlockPos());ownWholeHit=core!=null&&dev.ryanhcode.sable.api.SubLevelHelper.getConnectedChain(core).contains(body);}
                 if(!ownWholeHit)continue;
 
             }else if(!module.anchors().getFirst().bodyId().equals(body.getUniqueId()))continue;
-            double current=activeModifier(heart,module);
+            double current=activeModifier(heart,module,hitType);
             if(heart.isSurvivalCore()&&current<0)
                 current=Math.max(current,heart.modules().armorBilling.fundedModifier(heart,module));
             modifier=Math.min(modifier,current);
@@ -28,17 +38,20 @@ public final class ModuleArmor {
         if (modifier == Double.POSITIVE_INFINITY) return amount;
         return (float) (amount * (1 + Math.clamp(modifier, -100, 1000) / 100.));
     }
-    private static double activeModifier(HeartBlockEntity heart,VirtualModule module){
+    /** With no hit type, resolve the strongest protection for Energy billing. */
+    private static double activeModifier(HeartBlockEntity heart,VirtualModule module,HitType hitType){
         double modifier=Double.POSITIVE_INFINITY;
+        boolean projectileOnly=module.value("armorProjectileOnly")==1;
         for(var row:module.armorRules().rows())
-            if(row.enabled()&&signal(heart,row.source(),row.when(),row.channel()))modifier=Math.min(modifier,row.modifier());
+            if(row.enabled()&&signal(heart,row.source(),row.when(),row.channel()))
+                modifier=Math.min(modifier,hitType==null?row.lowestModifier(projectileOnly):row.modifier(hitType));
         return heart.isSurvivalCore()?Math.max(-SURVIVAL_MAX_REDUCTION,modifier):modifier;
     }
 
     public static double estimatedReduction(VirtualModule module){
         double reduction=0;
         for(var row:module.armorRules().rows())
-            if(row.enabled()&&row.channel()>0)reduction=Math.max(reduction,Math.clamp(-row.modifier()/100,0,SURVIVAL_MAX_REDUCTION/100));
+            if(row.enabled()&&row.channel()>0)reduction=Math.max(reduction,Math.clamp(-row.lowestModifier(module.value("armorProjectileOnly")==1)/100,0,SURVIVAL_MAX_REDUCTION/100));
         return reduction;
     }
 
@@ -66,7 +79,7 @@ public final class ModuleArmor {
                 var payment=payments.computeIfAbsent(module.id(),id->new Payment());
                 payment.modifier=0;
                 if(!HeartModules.triggered(module,heart))continue;
-                double modifier=activeModifier(heart,module);
+                double modifier=activeModifier(heart,module,null);
                 if(modifier>=0)continue;
                 double reduction=Math.clamp(-modifier,0,SURVIVAL_MAX_REDUCTION);
                 long cost=Math.max(1,Math.round(reduction*dev.sablelife.SableLifeServerConfig.armorTokenRate()*MICRO_TOKEN/20));

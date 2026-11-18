@@ -13,10 +13,13 @@ import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.item.component.CustomData;
+import java.util.List;
 import java.util.UUID;
 
 /** One invisible, non-extractable snapshot slot synchronizes bounded module data to this viewer only. */
 public final class HeartDashboardMenu extends AbstractContainerMenu {
+    private static final int COMPACT_MODULE_THRESHOLD = 256;
+    private static final int SNAPSHOT_BYTE_BUDGET = 1_600_000;
     private final HeartBlockEntity heart;
     private final Player viewer;
     private net.minecraft.nbt.ListTag blueprintFiles=new net.minecraft.nbt.ListTag();
@@ -34,27 +37,37 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
         }); refresh();
     }
     public CompoundTag snapshot() { return snapshot.getItem(0).getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag(); }
+    public static boolean messageEditable(CompoundTag snapshot) {
+        return snapshot.contains("MessageEditable") ? snapshot.getBoolean("MessageEditable") : snapshot.getBoolean("RespawnAllowed");
+    }
     private void refresh() {
         if (heart == null) return;
-        var tag = heart.modules().snapshot(heart, heart.canEdit(viewer)); tag.putBoolean("Ready", true); tag.putBoolean("CommandEditable", viewer.canUseGameMasterBlocks()); tag.putBoolean("CommandAllowed", heart.getLevel().getServer().isCommandBlockEnabled());tag.putBoolean("RespawnAllowed",viewer.isCreative()&&viewer.canUseGameMasterBlocks());
+        var modules = heart.modules().all();
+        var selected = DashboardSelection.get(heart, viewer.getUUID());
+        if (!modules.isEmpty() && heart.modules().find(selected) == null) selected = modules.getFirst().id();
+        var tag = heart.modules().snapshot(heart, heart.canEdit(viewer), selected, modules.size() > COMPACT_MODULE_THRESHOLD);
+        tag.putBoolean("Ready", true); tag.putBoolean("CommandEditable", viewer.canUseGameMasterBlocks()); tag.putBoolean("CommandAllowed", heart.getLevel().getServer().isCommandBlockEnabled());tag.putBoolean("RespawnAllowed",viewer.isCreative()&&viewer.canUseGameMasterBlocks());
+        tag.putBoolean("MessageEditable", canConfigureMessages(viewer));
         tag.putBoolean("GroupTools", true);
+        tag.putInt("OutputFaceLimit",dev.sablelife.SableLifeServerConfig.maximumRedstoneOutputFaces());
         tag.putBoolean("GroupMemberEditing", true);
-        var selected = DashboardSelection.get(heart, viewer.getUUID());if(selected==null&&!heart.modules().all().isEmpty())selected=heart.modules().all().getFirst().id(); if (selected != null) tag.putUUID("Selected", selected);
-        if(connectionsRevision!=heart.modules().revision()){connections=ModuleConnections.links(heart.modules().all());endpoints=ModuleConnections.endpoints(heart.modules().all());connectionsRevision=heart.modules().revision();}
+        if (selected != null) tag.putUUID("Selected", selected);
+        if(connectionsRevision!=heart.modules().revision()){connections=ModuleConnections.links(modules);endpoints=ModuleConnections.endpoints(modules);connectionsRevision=heart.modules().revision();}
         tag.put("References",ModuleConnections.references(connections,selected));
         inspectedChannel=Math.clamp(inspectedChannel,0,Math.max(0,heart.wireless().size()-1));tag.put("ChannelDiagnostics",ChannelDiagnostics.snapshot(heart,inspectedChannel,endpoints));
-        // A large core still exposes its complete selected module, but does not resend every other module's deep config.
-        if(tag.sizeInBytes()>1_000_000){
+        tag.put("BlueprintFiles", blueprintFiles.copy());
+        // Leave room in the slot packet for the selected module and diagnostics.
+        if(tag.sizeInBytes()>SNAPSHOT_BYTE_BUDGET){
             var list=tag.getList("Modules",10);var detailed=selected;
             for(var value:list){var module=(CompoundTag)value;if(detailed==null||!module.hasUUID("Id")||!module.getUUID("Id").equals(detailed))compactHeader(module);}
             tag.putBoolean("PartialAuthoring",true);
-            if(tag.sizeInBytes()>1_000_000){for(var value:list)compactHeader((CompoundTag)value);tag.putBoolean("Editable",false);tag.putBoolean("AuthoringOversized",true);}
+            if(tag.sizeInBytes()>SNAPSHOT_BYTE_BUDGET){for(var value:list)compactHeader((CompoundTag)value);tag.putBoolean("Editable",false);tag.putBoolean("AuthoringOversized",true);}
         }
-        tag.put("BlueprintFiles",blueprintFiles.copy());var stack = new ItemStack(Items.PAPER); stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
+        var stack = new ItemStack(Items.PAPER); stack.set(DataComponents.CUSTOM_DATA, CustomData.of(tag));
         snapshot.setItem(0, stack);
     }
     private static void compactHeader(CompoundTag module){
-        var keep=java.util.Set.of("Version","Id","Type","Name","Group","Enabled","Invalidated","Detached","Trigger","Channel","Status","TriggerPowered","HurtRuntime","PhaseRuntime","HitRuntime","PhaseActive","PhaseRemaining","PhaseChannelStatus","PhaseRangeValid","MovementPhase","TurnState","FacingState","LaserPhase","QuakePhase","PullPhase","PullVictims","ArenaDistance","ArenaWarning","NavigationTarget","NavigationLeft","NavigationRight","NavigationUp","NavigationDown","ItemDisplayVisible","RespawnRuntime");
+        var keep=java.util.Set.of("Version","Id","Type","Name","Group","Enabled","Status");
         for(var key:java.util.Set.copyOf(module.getAllKeys()))if(!keep.contains(key))module.remove(key);
     }
     @Override public void broadcastChanges() { if (heart != null && heart.getLevel().getGameTime() % 5 == 0) refresh(); super.broadcastChanges(); }
@@ -87,7 +100,7 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
             var target=heart.modules().find(id);if(target!=null&&!ModuleAvailability.enabled(heart,target))return false;if(target!=null&&target.type().equals("blueprint_spawn")&&!player.canUseGameMasterBlocks())return false;
         }
         if(heart.isControlCore()){
-            if(!java.util.Set.of("add","add_preset","select","wireless","sequence","frequency","preview","mark","edit","remove","reorder","copy","signal_rules","move_set","effects","projectile","sound_editor").contains(operation))return false;
+            if(!java.util.Set.of("add","add_preset","select","wireless","sequence","frequency","preview","mark","face_remove","edit","remove","reorder","copy","signal_rules","move_set","effects","projectile","sound_editor").contains(operation))return false;
             if((operation.equals("add")||operation.equals("add_preset"))&&!dev.sablelife.heart.RedstoneCorePolicy.supports(key))return false;
             var existing=heart.modules().find(id);if(!java.util.Set.of("add","add_preset","wireless","select","remove","reorder").contains(operation)&&(existing==null||!dev.sablelife.heart.RedstoneCorePolicy.supports(existing.type())))return false;
             if(operation.equals("edit")&&(key.startsWith("hurt")||existing!=null&&dev.sablelife.heart.RedstoneCorePolicy.disabledField(existing,key)||key.equals("trigger")&&(value<0||value>dev.sablelife.heart.RedstoneCorePolicy.maxTrigger(existing.type()))))return false;
@@ -144,8 +157,19 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
         if (operation.equals("preview") && player instanceof net.minecraft.server.level.ServerPlayer server) {
             var module = heart.modules().find(id);
             if (module == null||module.type().equals("surface_field")) return false;
-            if (module.invalidated()) return false;
-            if(!module.type().equals("bgm")&&!TargetCastOrigin.targeted(module)&&module.arenaCenter()==null&&module.anchors().isEmpty())return false;
+            if (key.equals(ModuleRedstone.OUTPUT_FACE)) {
+                return revision == heart.modules().revision() && ModuleRedstone.validIndex(module, value, false)
+                        && MarkingSessions.showOutputFace(server, heart, module, (int) value);
+            }
+            if (ModuleLinearMovement.worldDestination(module)) {
+                if (!HeartModules.status(module, heart).equals("valid")) return false;
+            } else if (module.type().equals("damage_accumulation")) {
+                if (!module.listensToPart() || !List.of("valid", "disabled").contains(HeartModules.status(module, heart))) return false;
+            } else if (module.type().equals("part_break")) {
+                boolean watch = module.listensToPart() && module.watchedPart() != null;
+                if (!watch && (module.invalidated() || module.anchors().isEmpty())) return false;
+            } else if (module.invalidated() || !module.type().equals("bgm") && !TargetCastOrigin.targeted(module)
+                    && module.arenaCenter() == null && module.anchors().isEmpty()) return false;
             MarkingSessions.showPreview(server, heart, module); return true;
         }
         if(operation.equals("accum_reset")){var target=heart.modules().find(id);if(!heart.canAccessEditor(player)||target==null||!target.type().equals("damage_accumulation"))return false;heart.modules().damageAccumulation.reset(id);refresh();broadcastChanges();return true;}
@@ -155,8 +179,28 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
             var target=heart.modules().find(id);boolean ok=operation.equals("arena_record")?dev.sablelife.ownership.ArenaRespawns.record(server,heart,target):dev.sablelife.ownership.ArenaRespawns.clear(server,heart,target);refresh();broadcastChanges();return ok;
         }
         if(operation.equals("edit")&&key.startsWith("arenaRespawn")&&(!dev.sablelife.ownership.ArenaRespawns.available()||!player.canUseGameMasterBlocks()))return false;
+        if (operation.equals("edit") && (ModuleFields.arenaText(key) || key.equals("spawnArenaRole"))
+                && (!player.isCreative() || !player.canUseGameMasterBlocks())) return false;
         if (!heart.canEdit(player) || revision != heart.modules().revision()) { refresh(); sendAllDataToRemote(); return false; }
         var module = heart.modules().find(id); boolean result;
+        if (operation.equals("edit") && key.equals("facingSensor")) {
+            if (module == null || !module.type().equals("auto_facing") || !Double.isFinite(value)
+                    || value != Math.rint(value) || value < 0 || value > heart.modules().all().size() || !text.isEmpty()) return false;
+            var sensor = value == 0 ? null : heart.modules().all().get((int) value - 1);
+            if (sensor != null && !sensor.type().equals("sensor")) return false;
+            module.facingSensor(sensor == null ? null : sensor.id());
+            heart.modules().changed(); heart.setChanged(); refresh(); broadcastChanges();
+            return true;
+        }
+        boolean adding = operation.equals("add") || operation.equals("add_preset");
+        String editedType = adding ? key : module == null ? "" : module.type();
+        if (editedType.equals("message_display") && !canConfigureMessages(player)) return false;
+        if (editedType.equals("message_display") && heart.isSurvivalCore() && operation.equals("edit")
+                && key.equals("messageGlobal") && value != 0) return false;
+        if (operation.equals("edit") && key.equals("spawnActivate") && module != null && module.type().equals("blueprint_spawn")) {
+            if (!dev.sablelife.ownership.BlueprintSpawns.available() || (value != 0 && value != 1)
+                    || value == 1 && !dev.sablelife.ownership.BlueprintSpawns.canEnableCoreActivation(heart, module)) return false;
+        }
         switch (operation) {
             case "add_preset" -> {
                 if(!AuthoringLimits.presetText(text)||!ModuleAvailability.authorable(key)||key.equals("command")&&!player.canUseGameMasterBlocks())return false;
@@ -164,7 +208,7 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
                     var tag=net.minecraft.nbt.TagParser.parseTag(text);if(!AuthoringLimits.compound(tag,AuthoringLimits.MAX_PRESET_BYTES)||!tag.getString("Type").equals(key)||tag.getInt("Version")>1)return false;
                     if(heart.isControlCore()&&tag.getInt("Trigger")>dev.sablelife.heart.RedstoneCorePolicy.maxTrigger(key))tag.putInt("Trigger",0);
                     var added=heart.modules().addPreset(tag);result=added!=null;if(added!=null){if(heart.isSurvivalCore())dev.sablelife.heart.SurvivalLifeCorePolicy.constrain(added);if(heart.isControlCore())dev.sablelife.heart.RedstoneCorePolicy.constrainMovement(added);DashboardSelection.set(heart,player.getUUID(),added.id());}
-                    if (added != null && added.type().equals("command")) added.approveCommands();
+                    if (added != null && AuthoringLimits.requiresOperator(added.type())) added.approveCommands();
                 }catch(com.mojang.brigadier.exceptions.CommandSyntaxException|IllegalArgumentException e){return false;}
             }
             case "add" -> {
@@ -184,10 +228,20 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
                 try { int split=text.indexOf('|'); int index=Integer.parseInt(split<0?text:text.substring(0,split)); result=module.commands().edit(key,index,value,split<0?"":text.substring(split+1)); } catch (IllegalArgumentException e) { return false; }
                 if(result){module.approveCommands();heart.modules().changed();}
             }
+            case "msg_row" -> {
+                if (module == null || !module.type().equals("message_display") || !module.known()
+                        || !Double.isFinite(value) || value != Math.rint(value) || value < 0 || value >= MessageProgram.MAX_ROWS) return false;
+                result = module.messages().edit(key, (int) value, text);
+                if (result) {
+                    module.approveCommands();
+                    heart.modules().changed();
+                }
+            }
             case "move_set" -> {
                 if(ModuleMoveSet.ruleLocked(module,key,heart.isControlCore()))return false;
                 if(key.equals("action_add")){
-                    try{var target=heart.modules().find(UUID.fromString(text.split("\\|",3)[1]));if(!ModuleAvailability.enabled(heart,target))return false;}
+                    try{var target=heart.modules().find(UUID.fromString(text.split("\\|",3)[1]));if(!ModuleAvailability.enabled(heart,target)
+                            || target.type().equals("message_display")&&!canConfigureMessages(player))return false;}
                     catch(IllegalArgumentException|IndexOutOfBoundsException e){return false;}
                 }
                 if (key.equals("action_add") && !player.canUseGameMasterBlocks()) {
@@ -201,15 +255,33 @@ public final class HeartDashboardMenu extends AbstractContainerMenu {
             case "reorder" -> result=Double.isFinite(value)&&(value==-1||value==1)&&heart.modules().reorder(id,(int)value);
             case "remove" -> { if(module!=null&&module.type().equals("command")&&!player.canUseGameMasterBlocks())return false;result=heart.modules().remove(id); }
             case "mark" -> {
+                if (key.equals(ModuleRedstone.OUTPUT_FACE)) {
+                    return ModuleRedstone.validIndex(module, value, true)
+                            && MarkingSessions.startOutputFace(player, heart, module, (int) value);
+                }
                 boolean watchedPart = key.equals(ModuleNetworking.Action.WATCHED_PART);
                 return (key.isEmpty() || watchedPart) && module != null && module.known()
                         && MarkingSessions.start(player, heart, module, watchedPart);
             }
+            case "face_remove" -> {
+                result = key.equals(ModuleRedstone.OUTPUT_FACE) && ModuleRedstone.validIndex(module, value, false)
+                        && module.removeRedstoneFace((int) value);
+                if (result) heart.modules().changed();
+            }
             case "edit" -> { if(heart.isSurvivalCore()&&module!=null&&!dev.sablelife.heart.SurvivalLifeCorePolicy.targetModeAllowed(module,key,value))return false; if (module != null && module.type().equals("command") && !player.canUseGameMasterBlocks()) return false; if(module!=null&&ModuleSurfaceField.impactAttack(module)&&key.equals("impactArea")){if(!Double.isFinite(value)||value!=Math.rint(value)||value<0||value>heart.modules().all().size())return false;var config=value==0?null:heart.modules().all().get((int)value-1);if(config!=null&&!config.type().equals("surface_field"))return false;module.impactField(config==null?null:config.id());result=true;}else if(module!=null&&module.type().equals("summoned_weapon")&&key.equals("summonAttack")){if(!Double.isFinite(value)||value!=Math.rint(value)||value<0||value>heart.modules().all().size())return false;var source=value==0?null:heart.modules().all().get((int)value-1);if(source!=null&&!ModuleSummonedWeapon.ATTACKS.contains(source.type()))return false;module.summonAttack(source==null?null:source.id());result=true;}else if(module!=null&&module.type().equals("hit_counter")&&key.equals("hitSource")){if(!Double.isFinite(value)||value!=Math.rint(value)||value<0||value>heart.modules().all().size())return false;var source=value==0?null:heart.modules().all().get((int)value-1);if(source!=null&&!ModuleHitCounter.ATTACKS.contains(source.type()))return false;module.hitSource(source==null?null:source.id(),(int)value);result=true;}else result = module != null && module.edit(key, value, text); if (result) { if (module.type().equals("command")) module.approveCommands(); if(key.equals("trigger") || key.startsWith("hurt") || key.equals("enabled")) heart.modules().hurtTriggers.reset(id); heart.modules().changed(); } }
             default -> { return false; }
         }
-        if (result) { heart.setChanged(); refresh(); broadcastChanges(); }
+        if (result) {
+            if (module != null && module.type().equals("message_display") && operation.equals("edit")) {
+                if (key.equals("enabled") || key.equals("trigger") || key.equals("channel") || key.startsWith("hurt"))
+                    heart.modules().resetMessages(id);
+            }
+            heart.setChanged(); refresh(); broadcastChanges();
+        }
         return result;
+    }
+    private boolean canConfigureMessages(Player player) {
+        return !heart.isControlCore() && (heart.isSurvivalCore() || player.isCreative() && player.canUseGameMasterBlocks());
     }
     @Override public void clicked(int slot, int button, ClickType type, Player player) {}
     @Override public ItemStack quickMoveStack(Player player, int slot) { return ItemStack.EMPTY; }

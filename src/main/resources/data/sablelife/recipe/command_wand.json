@@ -1,0 +1,15 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": ["  R", " A ", "S  "],
+  "key": {
+    "R": { "item": "minecraft:redstone" },
+    "A": { "item": "minecraft:amethyst_shard" },
+    "S": { "item": "minecraft:stick" }
+  },
+  "result": {
+    "id": "sablelife:command_wand",
+    "count": 1,
+    "components": { "minecraft:custom_data": "{SableLifeCommandModules:15}" }
+  }
+}

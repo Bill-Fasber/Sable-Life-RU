@@ -28,7 +28,8 @@ final class ModulePropertyHelp {
                     : key.equals("arrows") && m.type().equals("gun") ? "bullets" : key.equals("interval") && m.type().equals("laser") ? "burstInterval" : key));}
     static Component text(VirtualModule module,ModuleFields.Field field){
         String prefix="dashboard.sablelife.property_help.",key=field.key();
-        String specific=prefix+module.type()+"."+key,shared=prefix+key;
+        String specific=prefix+module.type()+"."+key;
+        String shared=prefix+(dev.sablelife.module.ArenaBattleTitle.isTemplate(key) ? "arenaBattleTitle" : key);
         Component detail;
         if(I18n.exists(specific))detail=Component.translatable(specific);
         else if(I18n.exists(shared))detail=Component.translatable(shared);

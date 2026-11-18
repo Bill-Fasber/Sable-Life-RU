@@ -4,6 +4,39 @@ import dev.ryanhcode.sable.api.SubLevelAssemblyHelper;import dev.ryanhcode.sable
 import net.minecraft.core.*;import net.minecraft.gametest.framework.*;import net.minecraft.world.level.block.Blocks;import net.neoforged.neoforge.gametest.*;import java.util.*;
 @GameTestHolder("sablelife_defense_tests") @PrefixGameTestTemplate(false)
 public final class ArmorRuleGameTests {
+ @GameTest(template="combat",batch="typed_armor_rule_data")
+ public static void OverridesUseExistingActionCodecAndSurviveSaveLoad(GameTestHelper h){
+  var c=core(h);
+  var p=TestActors.creative(h.getLevel());p.setPos(ModuleArena.corePosition(c));
+  var a=c.modules().add("armor");
+  var row=a.armorRules().add();row.edit("modifier",-20);
+  var legacy=VirtualModule.load(a.save()).armorRules().rows().getFirst();
+  h.assertTrue(legacy.modifier(ArmorRules.HitType.MELEE)==-20&&!legacy.overrides(ArmorRules.HitType.PROJECTILE),"Old rule did not inherit general");
+  var menu=new ArmorRuleMenu(2,p.getInventory(),c,a,row.id());
+  for(var edit:Map.of("meleeModifier",-50.25,"projectileModifier",-100.0).entrySet()){
+   String key=edit.getKey();
+   String toggle=key.replace("Modifier","Override");
+   h.assertTrue(!menu.action(p,c.modules().revision(),row.id(),key,edit.getValue()),"Inactive override was edited");
+   h.assertTrue(menu.action(p,c.modules().revision(),row.id(),toggle,1),"Override toggle rejected");
+   h.assertTrue(!menu.action(p,c.modules().revision(),row.id(),key,-100.01),"Value below the minimum was accepted");
+   var action=new ModuleNetworking.Action(2,c.modules().revision(),row.id(),"armor_rule_edit",key,edit.getValue(),"");
+   var buffer=new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(),h.getLevel().registryAccess());
+   try{
+    ModuleNetworking.Action.CODEC.encode(buffer,action);
+    var decoded=ModuleNetworking.Action.CODEC.decode(buffer);
+    h.assertTrue(decoded.equals(action)&&menu.action(p,decoded.revision(),decoded.module(),decoded.key(),decoded.value()),"Phase rule edit packet did not apply");
+   }finally{buffer.release();}
+  }
+  var saved=a.save();
+  var loaded=VirtualModule.load(saved).armorRules().rows().getFirst();
+  h.assertTrue(loaded.modifier()==-20&&loaded.modifier(ArmorRules.HitType.MELEE)==-50.25&&loaded.modifier(ArmorRules.HitType.PROJECTILE)==-100,"Saved rules lost a value");
+  var preset=ModulePreset.create(saved).armorRules().rows().getFirst();
+  h.assertTrue(preset.channel()==0&&preset.modifier(ArmorRules.HitType.MELEE)==-50.25,"Preset lost rule values or retained input binding");
+  saved.getList("ArmorRules",10).getCompound(0).putDouble("MeleeModifier",Double.NaN);
+  var fallback=VirtualModule.load(saved).armorRules().rows().getFirst();
+  h.assertTrue(fallback.modifier(ArmorRules.HitType.MELEE)==-20&&fallback.modifier(ArmorRules.HitType.PROJECTILE)==-100,"Invalid override did not fall back independently");
+  h.succeed();
+ }
  private static HeartBlockEntity core(GameTestHelper h){var l=h.getLevel();var p=h.absolutePos(new BlockPos(4,40,4));l.setBlockAndUpdate(p,SableLife.HEART.get().defaultBlockState());l.setBlockAndUpdate(p.east(),Blocks.IRON_BLOCK.defaultBlockState());var b=SubLevelAssemblyHelper.assembleBlocks(l,p,List.of(p,p.east()),new BoundingBox3i(p.getX(),p.getY(),p.getZ(),p.getX()+1,p.getY(),p.getZ()));return (HeartBlockEntity)l.getBlockEntity(b.getPlot().getCenterBlock());}
  @GameTest(template="combat",batch="armor_rules_stage") public static void SignalsChooseLowestRuleAndOuterGateStillApplies(GameTestHelper h){var c=core(h);var a=c.modules().add("armor");a.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));for(int i=0;i<2;i++){c.wireless().add();c.wireless().channel(i).set(0,1);c.wireless().channel(i).set(6,3);}var r=a.armorRules().add();r.edit("modifier",-50);var r2=a.armorRules().add();r2.edit("channel",2);r2.edit("modifier",50);c.tryActivate(TestActors.creative(h.getLevel()));var hit=c.getBlockPos().east();h.assertTrue(ModuleArmor.damage(c,hit,20)==20,"Empty signal created protection");c.wireless().programOutputs("test",Map.of(0,15));h.assertTrue(ModuleArmor.damage(c,hit,20)==10,"First phase missing");c.wireless().programOutputs("test",Map.of(1,15));h.assertTrue(ModuleArmor.damage(c,hit,20)==30,"Second phase missing");c.wireless().programOutputs("test",Map.of(0,15,1,15));h.assertTrue(ModuleArmor.damage(c,hit,20)==10,"Rows stacked or positive value overrode protection");r.edit("modifier",-100);h.assertTrue(ModuleArmor.damage(c,hit,20)==0,"Immunity failed");r.edit("enabled",0);h.assertTrue(ModuleArmor.damage(c,hit,20)==30,"Disabled row still applied");a.edit("trigger",2,"");a.edit("channel",1,"");c.wireless().programOutputs("test",Map.of(1,15));h.assertTrue(ModuleArmor.damage(c,hit,20)==20,"Outer trigger was ignored");a.edit("trigger",0,"");r2.edit("channel",0);h.assertTrue(ModuleArmor.damage(c,hit,20)==20,"Unbound row applied");h.succeed();}
  @GameTest(template="combat",batch="armor_rule_unpowered") public static void UnpoweredRowsPauseOnSignalAndResumeWithoutBypassingOuterGate(GameTestHelper h){var c=core(h);var a=c.modules().add("armor");a.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));c.wireless().add();c.wireless().channel(0).set(0,1);c.wireless().channel(0).set(6,3);var r=a.armorRules().add();r.edit("modifier",-100);r.edit("when",1);c.tryActivate(TestActors.creative(h.getLevel()));h.assertTrue(ModuleArmor.damage(c,c.getBlockPos(),20)==0,"Unpowered rule did not apply initially");c.wireless().programOutputs("test",Map.of(0,15));h.assertTrue(ModuleArmor.damage(c,c.getBlockPos(),20)==20,"Powered signal did not pause inverse rule");c.wireless().programOutputs("test",Map.of());h.assertTrue(ModuleArmor.damage(c,c.getBlockPos(),20)==0,"Inverse rule did not resume");r.edit("channel",0);h.assertTrue(ModuleArmor.damage(c,c.getBlockPos(),20)==20,"Unbound inverse rule created immunity");r.edit("channel",2);h.assertTrue(ModuleArmor.damage(c,c.getBlockPos(),20)==20,"Missing channel created immunity");r.edit("channel",1);a.edit("trigger",2,"");a.edit("channel",1,"");h.assertTrue(ModuleArmor.damage(c,c.getBlockPos(),20)==20,"Inverse row bypassed outer trigger");h.assertTrue(VirtualModule.load(a.save()).armorRules().rows().getFirst().when()==1&&!r.edit("when",2),"Condition did not persist or invalid value accepted");h.succeed();}

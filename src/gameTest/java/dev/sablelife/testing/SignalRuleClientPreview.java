@@ -33,7 +33,7 @@ public final class SignalRuleClientPreview {
   SignalRuleScreen panel;String type;Preview(){super(Component.empty());}void reinit(){init();}
   @Override protected void init(){type=index%2==0?"signal_logic":"combat_event";var inv=new Inventory(null);var menu=new SignalRuleMenu(1,inv);panel=new SignalRuleScreen(menu,inv,title);panel.init(minecraft,width,height);
    var config=new SignalRules(type);var tag=new net.minecraft.nbt.CompoundTag();tag.putString("Type",type);tag.putBoolean("Ready",true);tag.putBoolean("Editable",true);tag.put("Groups",config.save());var paper=new ItemStack(Items.PAPER);paper.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(paper);panel.init(minecraft,width,height);
-   for(int i=0;i<(type.equals("signal_logic")?16:32);i++){var r=config.add();if(type.equals("signal_logic")){r.edit("signalInput",i+1);r.edit("signalCondition",i%2);}else{r.edit("eventKind",(i+index/2)%2==0?0:2);r.edit("eventChannel",i+1);}}
+   for(int i=0;i<(type.equals("signal_logic")?16:32);i++){var r=config.add();if(type.equals("signal_logic")){r.edit("signalInput",i+1);r.edit("signalCondition",i%8);r.edit("signalCompare",i+2);if(i==0)r.edit("signalCondition",4);}else{r.edit("eventKind",(i+index/2)%2==0?0:2);r.edit("eventChannel",i+1);}}
    tag.put("Groups",config.save());paper.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));panel.init(minecraft,width,height);
   }
   @Override public void render(GuiGraphics g,int x,int y,float p){panel.render(g,-100,-100,p);}

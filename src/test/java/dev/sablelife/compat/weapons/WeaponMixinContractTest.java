@@ -49,6 +49,29 @@ class WeaponMixinContractTest {
         var classes=installed();edit(classes,BULLET,node->{for(var m:node.methods)for(var ins:m.instructions.toArray())if(ins instanceof MethodInsnNode call&&call.owner.equals("net/minecraft/world/entity/projectile/Projectile")&&call.name.equals("onHitBlock"))call.name="changedHook";});
         assertFalse(check("TaczBodyDamageMixin",BULLET,classes).compatible());
     }
+    @Test void breachingHookRequiresTheCancelableHandlerAndNativeBulletAccessors() throws Exception {
+        String hook = "TaczBreachingDamageMixin";
+        String handler = "com/victoriomods/taczballisticbreaching/BallisticBlockHitHandler";
+        String event = "com/tacz/guns/api/event/server/AmmoHitBlockEvent";
+        var classes = installed();
+        var writer = new ClassWriter(0);
+        writer.visit(Opcodes.V21, Opcodes.ACC_PUBLIC, handler, null, "java/lang/Object", null);
+        var method = writer.visitMethod(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC, "onAmmoHitBlock", "(L" + event + ";)V", null, null);
+        method.visitVarInsn(Opcodes.ALOAD, 0);
+        method.visitInsn(Opcodes.ICONST_1);
+        method.visitMethodInsn(Opcodes.INVOKEVIRTUAL, event, "setCanceled", "(Z)V", false);
+        method.visitInsn(Opcodes.RETURN);
+        method.visitMaxs(2, 1);
+        method.visitEnd();
+        assertFalse(check(hook, handler, classes).compatible());
+        classes.put(handler, writer.toByteArray());
+        assertTrue(check(hook, handler, classes).compatible());
+        var changed = new HashMap<>(classes);
+        edit(changed, handler, node -> node.methods.getFirst().desc = "(Ljava/lang/Object;)V");
+        assertFalse(check(hook, handler, changed).compatible());
+        edit(classes, event, node -> node.methods.removeIf(m -> m.name.equals("getHitResult")));
+        assertFalse(check(hook, handler, classes).compatible());
+    }
     @Test void changedShadowTypeIsSkipped() throws Exception {
         var classes=installed();String target="com/tacz/guns/util/block/ProjectileExplosion";
         edit(classes,target,node->node.fields.stream().filter(f->f.name.equals("radius")).forEach(f->f.desc="D"));

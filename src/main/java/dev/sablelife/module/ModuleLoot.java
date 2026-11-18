@@ -15,7 +15,8 @@ import java.util.*;
 /** The marked surviving block identifies its detached connected fragment, never a box around the core. */
 public final class ModuleLoot {
     public static void tick(HeartBlockEntity heart) {
-        if (!(heart.getLevel() instanceof ServerLevel server) || heart.health().state() != HeartState.ALIVE) return;
+        if (!(heart.getLevel() instanceof ServerLevel server) || heart.health().state() != HeartState.ALIVE
+                || heart.blueprintConnectionsSettling()) return;
         var root = Sable.HELPER.getContaining(server, heart.getBlockPos()); if (root == null) return;
         for (var module : heart.modules().all()) {
             if (!ModuleAvailability.enabled(heart,module) || !module.known() || !module.type().equals("loot") || !module.enabled() || module.invalidated() || module.anchors().size() != 1

@@ -54,11 +54,17 @@ public final class TargetNavigation {
         return module.value("lineOfSight") != 0 || ModuleTargets.visible(level, heart.creatureId(),
                 SensorGeometry.sightStart(center, point.subtract(center), new Quaterniond(module.anchors().getFirst().body(heart).logicalPose().orientation())), entity);
     }
-    public void tick(ServerLevel level, HeartBlockEntity heart, VirtualModule module, Map<ModuleSignals.Face, Integer> signals) {
-        var state = states.computeIfAbsent(module.id(), ignored -> new State());
-        var anchor = module.anchors().getFirst(); var body = anchor.body(heart); var center = anchor.world(heart, false);
-        var pos = anchor.position(body);
-        for (var face : Direction.values()) signals.putIfAbsent(new ModuleSignals.Face(pos, face), 0);
+    private CommandTarget.Aim aim(ServerLevel level, HeartBlockEntity heart, VirtualModule module, State state,
+                                  Vec3 center, Quaterniond orientation) {
+        var order = heart.modules().commandTarget().current(level, CommandTarget.TARGET_ALIGNMENT);
+        if (order != null) {
+            state.target = null;
+            state.nextSearch = 0;
+            var aim = order.resolve(level, module.value("target") == 4);
+            if (aim == null || module.value("lineOfSight") != 0) return aim;
+            var start = SensorGeometry.sightStart(center, aim.point().subtract(center), orientation);
+            return SensorGeometry.commandVisible(level, heart, start, aim.point(), order.lifeId()) ? aim : null;
+        }
         LivingEntity target = ModuleTargets.resolveForModule(level,state.target,heart,module);
         if (level.getGameTime() >= state.nextSearch || target != null && !target.isAlive()) {
             state.nextSearch = level.getGameTime() + 5;
@@ -70,11 +76,26 @@ public final class TargetNavigation {
             }
             state.target = target == null ? null : target.getUUID();
         }
-        state.left = state.right = state.up = state.down = 0; state.name = target == null ? "" : target.getName().getString();
-        if (target == null) { output(module,state,signals,pos,0,0);return; }
-        var delta = ContactBox.rotate(new Quaterniond(body.logicalPose().orientation()).conjugate(),
-                SableBodyProbe.toWorld(level, target.getBoundingBox().getCenter()).subtract(center));
-        if (delta.lengthSqr() > Math.pow(module.value("radius"), 2)) { state.target = null; state.name = ""; output(module,state,signals,pos,0,0);return; }
+        if (target == null) return null;
+        var point = SableBodyProbe.toWorld(level, target.getBoundingBox().getCenter());
+        double range = module.value("radius");
+        if (point.distanceToSqr(center) > range * range) {
+            state.target = null;
+            return null;
+        }
+        return new CommandTarget.Aim(point, target.getName().getString());
+    }
+    public void tick(ServerLevel level, HeartBlockEntity heart, VirtualModule module, Map<ModuleSignals.Face, Integer> signals) {
+        var state = states.computeIfAbsent(module.id(), ignored -> new State());
+        var anchor = module.anchors().getFirst(); var body = anchor.body(heart); var center = anchor.world(heart, false);
+        var pos = anchor.position(body);
+        for (var face : Direction.values()) signals.putIfAbsent(new ModuleSignals.Face(pos, face), 0);
+        var orientation = new Quaterniond(body.logicalPose().orientation());
+        var aim = aim(level, heart, module, state, center, orientation);
+        state.left = state.right = state.up = state.down = 0;
+        state.name = aim == null ? "" : aim.name();
+        if (aim == null) { output(module,state,signals,pos,0,0);return; }
+        var delta = ContactBox.rotate(orientation.conjugate(), aim.point().subtract(center));
         var planar = new Vec3(delta.x, 0, delta.z).normalize();
         var front = front(module); var right = front.getClockWise(); var left = front.getCounterClockWise();
         double forwardDot = planar.dot(Vec3.atLowerCornerOf(front.getNormal()));

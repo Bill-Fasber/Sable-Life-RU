@@ -1,0 +1,9 @@
+{
+  "required": false,
+  "minVersion": "0.8",
+  "package": "dev.sablelife.compat.littletiles.mixin",
+  "plugin": "dev.sablelife.compat.littletiles.LittleTilesMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "client": ["BufferLossMixin", "PipelineRecoveryMixin"],
+  "injectors": {"defaultRequire": 1}
+}

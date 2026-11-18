@@ -3,6 +3,7 @@ package dev.sablelife.module;
 import dev.sablelife.heart.*;
 import dev.sablelife.attack.ContactBox;
 import dev.sablelife.compat.sable.SableBodyProbe;
+import dev.sablelife.sense.SensorGeometry;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
@@ -22,12 +23,33 @@ public final class ModuleAutoFacing {
         return ModuleTargets.matches(target,module);
     }
     public static LivingEntity selectTarget(ServerLevel level,HeartBlockEntity heart,VirtualModule module,Vec3 pivot){
+        if (module.value("facingSource") == 1) {
+            var target = heart.modules().events().sensorTarget(heart, module.facingSensorId());
+            if (target instanceof Player player && player.isCreative() && module.value("facingCreative") == 0) return null;
+            if (target != null && module.value("lineOfSight") == 1) {
+                var ownBodies = new HashSet<>(SableBodyProbe.inspect(level, heart.getBlockPos()).connectedBodies());
+                if (!SensorGeometry.visible(level, heart.creatureId(), pivot, target.getBoundingBox().getCenter(),
+                        target instanceof ModuleTargets.LifeTarget ? target.getUUID() : null, ownBodies)) return null;
+            }
+            return target;
+        }
         double range=module.value("facingRange");boolean sight=module.value("lineOfSight")==1;
         var ownBodies=sight?new HashSet<>(SableBodyProbe.inspect(level,heart.getBlockPos()).connectedBodies()):Set.<UUID>of();
         return ModuleTargets.queryForModule(level,heart,module,new AABB(pivot,pivot).inflate(range),e->eligible(e,module)).stream()
                 .filter(e->e.getBoundingBox().getCenter().distanceToSqr(pivot)<=range*range)
                 .filter(e->!sight||dev.sablelife.sense.SensorGeometry.visible(level,heart.creatureId(),pivot,e.getBoundingBox().getCenter(),e instanceof ModuleTargets.LifeTarget?e.getUUID():null,ownBodies))
                 .min(ModuleTargets.comparator(heart,e->e.getBoundingBox().getCenter().distanceToSqr(pivot)).thenComparing(e->e.getUUID().toString())).orElse(null);
+    }
+    private static Vec3 facingPoint(ServerLevel level, HeartBlockEntity heart, VirtualModule module, Vec3 pivot) {
+        var order = heart.modules().commandTarget().current(level, CommandTarget.AUTO_FACING);
+        if (order == null) {
+            var target = selectTarget(level, heart, module, pivot);
+            return target == null ? null : target.getBoundingBox().getCenter();
+        }
+        var aim = order.resolve(level, module.value("facingCreative") == 1);
+        if (aim == null || module.value("lineOfSight") == 1
+                && !SensorGeometry.commandVisible(level, heart, pivot, aim.point(), order.lifeId())) return null;
+        return aim.point();
     }
     public void tick(HeartBlockEntity heart,boolean movementBusy){tick(heart,movementBusy,false);}
     public void tick(HeartBlockEntity heart,boolean movementBusy,boolean preserveTranslation){
@@ -39,7 +61,7 @@ public final class ModuleAutoFacing {
             if(!HeartModules.triggered(module,heart)){states.put(module.id(),"idle");continue;}
             if(movementBusy||controlled){states.put(module.id(),"busy");continue;}
             var pivot=SableBodyProbe.toWorld(level,heart.getBlockPos().getCenter());
-            var target=selectTarget(level,heart,module,pivot);
+            var target=facingPoint(level,heart,module,pivot);
             if(target==null){states.put(module.id(),"no_target");continue;}controlled=true;
             var anchor=module.anchors().getFirst();var marked=anchor.body(heart);if(marked==null)continue;
             var front=ContactBox.rotate(new Quaterniond(marked.logicalPose().orientation()),Vec3.atLowerCornerOf(anchor.face().getNormal()));
@@ -48,7 +70,7 @@ public final class ModuleAutoFacing {
             var bodies=LinearMovementGeometry.capture(heart);if(bodies.isEmpty()){states.put(module.id(),"blocked");continue;}
             double radius=AutoFacingGeometry.radius(bodies,pivot);
             double degrees=module.value("facingCollision")==0?module.value("facingSpeed")/20:Math.min(module.value("facingSpeed")/20,Math.toDegrees(4/radius));
-            var desired=target.getBoundingBox().getCenter().subtract(pivot);
+            var desired=target.subtract(pivot);
             var turn=AutoFacingGeometry.turn(front,desired,vertical,degrees);
             double angle=2*Math.acos(Math.min(1,Math.abs(turn.w)));if(angle<1e-5){states.put(module.id(),"tracking");continue;}
             boolean clear=module.value("facingCollision")==0||AutoFacingGeometry.clearTurn(level,bodies,pivot,turn,radius),verticalBlocked=false;

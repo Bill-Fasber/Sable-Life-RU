@@ -2,7 +2,6 @@ package dev.sablelife.api;
 import dev.sablelife.combat.*;
 import dev.sablelife.compat.sable.SableBodyProbe;
 import dev.sablelife.heart.*;
-import dev.sablelife.ownership.BodyOwnership;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.projectile.Projectile;
@@ -25,7 +24,7 @@ public final class BodyCombatApi {
   for(var hit:BodySphereQuery.query(level,center,visibilityOrigin,radius)){
    if(excluded!=null&&excluded.contains(hit.core().creatureId()))continue;
    double damage=damageAtDistance.applyAsDouble(hit.distance());if(!Double.isFinite(damage)||damage<=0)continue;
-   var core=hit.core();if(core.getLevel()!=level||core.isRemoved()||core.isControlCore()||!core.creatureId().equals(BodyOwnership.get(level).owner(hit.block())))continue;
+   var core=hit.core();if(core.getLevel()!=level||core.isRemoved()||core.isControlCore()||!BodyCombat.ownsDamageBlock(level,core,hit.block()))continue;
    var data=source.getPersistentData();if(data.hasUUID("SableLifeAttackOwner")&&!core.acceptsLifeAttack(data.getUUID("SableLifeAttackOwner")))continue;
    if(core.modules().damageBoxes.bodyDamage(core,source,hit.block(),(float)Math.min(damage,HeartHealth.MAX_CONFIGURED_HEALTH),false,true))hits++;
   }return hits;

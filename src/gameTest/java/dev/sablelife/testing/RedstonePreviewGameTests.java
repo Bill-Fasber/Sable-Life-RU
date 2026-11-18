@@ -11,6 +11,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.*;
 import net.minecraft.network.protocol.*;
 import net.minecraft.network.protocol.common.ClientboundCustomPayloadPacket;
+import net.minecraft.network.protocol.game.ClientboundSetActionBarTextPacket;
 import net.minecraft.server.network.*;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.Blocks;
@@ -25,15 +26,266 @@ public final class RedstonePreviewGameTests {
  private static HeartBlockEntity fixture(GameTestHelper h){var l=h.getLevel();var p=h.absolutePos(new BlockPos(3,40,3));l.setBlockAndUpdate(p,SableLife.HEART.get().defaultBlockState());l.setBlockAndUpdate(p.north(),Blocks.IRON_BLOCK.defaultBlockState());var b=SubLevelAssemblyHelper.assembleBlocks(l,p,List.of(p,p.north()),new BoundingBox3i(p.getX(),p.getY(),p.getZ()-1,p.getX(),p.getY(),p.getZ()));var c=(HeartBlockEntity)l.getBlockEntity(b.getPlot().getCenterBlock());var hover=c.modules().add("hover_anchor");hover.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));return c;}
  @GameTest(template="combat",batch="redstone_disabled_preview")
  public static void CopiedDisabledRedstoneRetainsFacePreviewAfterRemarkAndMissingMarksDrawNothing(GameTestHelper h)throws Exception{
-  var c=fixture(h);var m=c.modules().add("wireless_redstone");m.edit("redstoneFaces",0,"");m.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));m.edit("enabled",0,"");var p=TestActors.creative(h.getLevel());p.setPos(m.anchors().getFirst().world(c,false));int[] dust={0},other={0};
-  p.connection=new ServerGamePacketListenerImpl(h.getLevel().getServer(),new Connection(PacketFlow.SERVERBOUND),p,CommonListenerCookie.createInitial(p.getGameProfile(),false)){@Override public void send(Packet<?> packet){if(packet instanceof ClientboundCustomPayloadPacket cp&&cp.payload() instanceof MarkOutline outline){dust[0]+=outline.endpoints().size();if(outline.kind()!=MarkOutline.Kind.DETAIL||outline.color()!=0x33FF66)other[0]++;}else if(packet instanceof net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket)other[0]++;}};
+  var c=fixture(h);var m=c.modules().add("wireless_redstone");m.edit("redstoneFaces",0,"");m.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));m.edit("enabled",0,"");var p=TestActors.creative(h.getLevel());p.setPos(m.anchors().getFirst().world(c,false));int[] dust={0},number={0},other={0},actionBar={0};
+  p.connection=new ServerGamePacketListenerImpl(h.getLevel().getServer(),new Connection(PacketFlow.SERVERBOUND),p,CommonListenerCookie.createInitial(p.getGameProfile(),false)){
+   @Override public void send(Packet<?> packet){
+    if(packet instanceof ClientboundCustomPayloadPacket cp&&cp.payload() instanceof MarkOutline outline){
+     if(outline.kind()==MarkOutline.Kind.DETAIL&&outline.color()==0x33FF66)dust[0]+=outline.endpoints().size();
+     else if(outline.kind()==MarkOutline.Kind.MARK&&outline.color()==MarkOutline.MARK_COLOR)number[0]+=outline.endpoints().size();
+     else other[0]++;
+    }
+    else if(packet instanceof net.minecraft.network.protocol.game.ClientboundLevelParticlesPacket)other[0]++;
+    else if(packet instanceof ClientboundSetActionBarTextPacket)actionBar[0]++;
+   }
+  };
   var draw=MarkingSessions.class.getDeclaredMethod("previewModule",ServerPlayer.class,HeartBlockEntity.class,VirtualModule.class);draw.setAccessible(true);
-  draw.invoke(null,p,c,m);h.assertTrue(dust[0]==108&&other[0]==0,"Disabled six-face preview lost solid edges or stripes");
-  m.edit("enabled",1,"");dust[0]=0;draw.invoke(null,p,c,m);h.assertTrue(dust[0]==108&&other[0]==0,"Enabled preview differs");
+  draw.invoke(null,p,c,m);h.assertTrue(dust[0]==102&&number[0]==6&&other[0]==0,"Disabled six-face preview lost stripes or number 1");
+  m.edit("enabled",1,"");dust[0]=number[0]=0;draw.invoke(null,p,c,m);h.assertTrue(dust[0]==102&&number[0]==6&&other[0]==0,"Enabled preview differs");
   m.edit("enabled",0,"");var data=c.copyConfiguration();h.assertTrue(c.pasteConfiguration(p,data),"Copier paste failed");var copied=c.modules().all().stream().filter(x->x.type().equals("wireless_redstone")).findFirst().orElseThrow();
-  h.assertTrue(!copied.enabled()&&copied.anchors().isEmpty(),"Copy changed enabled state or retained source mark");dust[0]=0;draw.invoke(null,p,c,copied);h.assertTrue(dust[0]==0&&other[0]==0,"Unmarked copied module drew or crashed");
-  copied.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));copied.edit("redstoneFaces",1,"");draw.invoke(null,p,c,copied);h.assertTrue(dust[0]==18&&other[0]==0,"Remarked copied module did not show selected face");
-  copied.clearMarks();copied.edit("enabled",1,"");dust[0]=0;draw.invoke(null,p,c,copied);h.assertTrue(dust[0]==0&&other[0]==0,"Enabled unmarked redstone drew or crashed");h.succeed();
+  h.assertTrue(!copied.enabled()&&copied.anchors().isEmpty(),"Copy changed enabled state or retained source mark");dust[0]=number[0]=0;draw.invoke(null,p,c,copied);h.assertTrue(dust[0]==0&&number[0]==0&&other[0]==0,"Unmarked copied module drew or crashed");
+  copied.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));copied.edit("redstoneFaces",1,"");draw.invoke(null,p,c,copied);h.assertTrue(dust[0]==12&&number[0]==6&&other[0]==0,"Remarked copied module did not show numbered surface");
+  copied.clearMarks();copied.edit("enabled",1,"");dust[0]=0;draw.invoke(null,p,c,copied);h.assertTrue(dust[0]==0&&other[0]==0,"Enabled unmarked redstone drew or crashed");
+  h.assertTrue(actionBar[0]==0,"Wireless redstone preview sent an action-bar message");
+  h.succeed();
+ }
+
+ @GameTest(template="combat",batch="channel_output_faces")
+ public static void ChannelPublishesNineFacesAndReloadClearsRemovedOutput(GameTestHelper h) {
+  var core=fixture(h);
+  var root=core.getBlockPos();
+  var player=TestActors.creative(h.getLevel());
+  player.setPos(ModuleAnchor.create(core,root,Direction.EAST).world(core,false));
+  int index=core.wireless().add();
+  var channel=core.wireless().channel(index);
+  channel.set(6,3);
+  channel.setOutputFace(0,ModuleAnchor.create(core,root,Direction.EAST));
+  for (Direction direction : List.of(Direction.WEST,Direction.UP,Direction.DOWN,Direction.SOUTH))
+   channel.setOutputFace(channel.outputFaces().size(),ModuleAnchor.create(core,root,direction));
+  for (Direction direction : List.of(Direction.NORTH,Direction.EAST,Direction.WEST,Direction.UP))
+   channel.setOutputFace(channel.outputFaces().size(),ModuleAnchor.create(core,root.north(),direction));
+  h.assertTrue(channel.outputFaces().size()==9,"Ninth face was not accepted");
+  h.assertTrue(channel.renameOutputFace(8,"尾灯"),"Name rejected");
+  var remark=ModuleAnchor.create(core,root.north(),Direction.DOWN);
+  h.assertTrue(channel.setOutputFace(8,remark)&&channel.outputFaceName(8).equals("尾灯"),"Remark lost the name");
+  h.assertTrue(!channel.renameOutputFace(8,"x".repeat(41)),"Oversized name was accepted");
+  var data=core.wireless().save(h.getLevel().registryAccess());
+  core.wireless().load(data,h.getLevel().registryAccess());
+  channel=core.wireless().channel(index);
+  h.assertTrue(channel.outputFaces().size()==9,"Faces did not round trip through world NBT");
+  h.assertTrue(channel.outputFaceName(8).equals("尾灯")&&channel.outputFaceName(0).isEmpty(),
+      "Renamed or legacy output face did not round trip");
+  core.tryActivate(player);
+  core.wireless().programOutputs("channel_face_test",Map.of(index,11));
+  var faces=new HashMap<ModuleSignals.Face,Integer>();
+  core.wireless().collectOutputFaces(faces);
+  h.assertTrue(faces.size()==9&&faces.values().stream().allMatch(power->power==11),"Channel strength did not reach all nine faces");
+  core.modules().tick(core);
+  for (var face : faces.keySet())
+   h.assertTrue(ModuleSignals.signal(h.getLevel(),face.pos(),face.outward().getOpposite())==11,
+       "The channel output was not visible to the redstone signal hook");
+
+
+  var menu=new HeartWirelessMenu(1,player.getInventory(),core,index);
+  int revision=core.wireless().faceRevision();
+  var request=new ModuleNetworking.Action(1,revision,new UUID(0,0),"wire_face","remove",8,"");
+  var buffer=new RegistryFriendlyByteBuf(Unpooled.buffer(),h.getLevel().registryAccess());
+  try {
+   ModuleNetworking.Action.CODEC.encode(buffer,request);
+   var decoded=ModuleNetworking.Action.CODEC.decode(buffer);
+   h.assertTrue(decoded.equals(request),"Face operation did not round trip");
+   var rename=new ModuleNetworking.Action(1,revision,new UUID(0,0),"wire_face","rename",8,"😀".repeat(40));
+   ModuleNetworking.Action.CODEC.encode(buffer,rename);
+   var decodedName=ModuleNetworking.Action.CODEC.decode(buffer);
+   h.assertTrue(decodedName.equals(rename),"Maximum-length Unicode output name did not round trip");
+   h.assertTrue(core.resetForCreative(player),"Could not release life for editing");
+   h.assertTrue(menu.outputAction(player,decodedName.revision(),decodedName.key(),decodedName.value(),decodedName.text())
+       &&channel.outputFaceName(8).equals(rename.text()),"Renaming through the menu failed");
+   h.assertTrue(menu.outputAction(player,decoded.revision(),decoded.key(),decoded.value()),"Ninth face could not be removed");
+   h.assertTrue(!menu.outputAction(player,revision,"remove",0),"Stale request removed another face");
+  } finally { buffer.release(); }
+  h.assertTrue(channel.outputFaces().size()==8,"Removal did not affect exactly one face");
+  faces.clear();
+  core.wireless().master(false);
+  core.wireless().collectOutputFaces(faces);
+  h.assertTrue(faces.isEmpty(),"Master off left active channel faces");
+  h.succeed();
+ }
+ @GameTest(template="combat",batch="redstone_output_faces")
+ public static void OutputFacesShareSignalAndRetainLegacyMark(GameTestHelper h) {
+  var core = fixture(h);
+  var module = core.modules().add("wireless_redstone");
+  var root = core.getBlockPos();
+  var first = ModuleAnchor.create(core, root, Direction.EAST);
+  module.anchors(List.of(first));
+  module.edit("trigger", 0, "");
+  module.edit("redstonePower", 9, "");
+  module.edit("redstoneFaces", 1, "");
+  var old = core.modules().save();
+  core.modules().load(old);
+  module = core.modules().find(module.id());
+  h.assertTrue(module.anchors().equals(List.of(first)), "Legacy first mark did not survive loading");
+
+  var player = TestActors.creative(h.getLevel());
+  player.setPos(first.world(core, false));
+  var outlines = new ArrayList<MarkOutline>();
+  player.connection = new ServerGamePacketListenerImpl(h.getLevel().getServer(),
+    new Connection(PacketFlow.SERVERBOUND), player, CommonListenerCookie.createInitial(player.getGameProfile(), false)) {
+   @Override public void send(Packet<?> packet) {
+    if (packet instanceof ClientboundCustomPayloadPacket custom && custom.payload() instanceof MarkOutline outline)
+     outlines.add(outline);
+   }
+  };
+  var menu = new HeartDashboardMenu(1, player.getInventory(), core);
+  int revision = core.modules().revision();
+  var request = new ModuleNetworking.Action(1, revision, module.id(), "mark", ModuleRedstone.OUTPUT_FACE, 1, "");
+  var buffer = new RegistryFriendlyByteBuf(Unpooled.buffer(), h.getLevel().registryAccess());
+  try {
+   ModuleNetworking.Action.CODEC.encode(buffer, request);
+   var decoded = ModuleNetworking.Action.CODEC.decode(buffer);
+   h.assertTrue(decoded.equals(request), "Output face action changed in transit");
+   h.assertTrue(menu.action(player, decoded.revision(), decoded.module(), decoded.operation(), decoded.key(),
+     decoded.value(), decoded.text()), "Dashboard refused valid add request");
+  } finally {
+   buffer.release();
+  }
+  h.assertTrue(!MarkingSessions.select(player, root, Direction.EAST), "Duplicate face was accepted");
+  h.assertTrue(MarkingSessions.select(player, root.north(), Direction.WEST), "Second output could not be marked");
+  var second = ModuleAnchor.create(core, root.north(), Direction.WEST);
+  h.assertTrue(module.anchors().equals(List.of(first, second)), "Adding changed the first face");
+  h.assertTrue(!menu.action(player, revision, module.id(), "face_remove", ModuleRedstone.OUTPUT_FACE, 1, ""),
+    "Stale remove request changed the module");
+  revision = core.modules().revision();
+  for (double index : new double[]{-1, 1.5, 8, Double.NaN})
+   h.assertTrue(!menu.action(player, revision, module.id(), "mark", ModuleRedstone.OUTPUT_FACE, index, ""),
+     "Invalid output index was accepted: " + index);
+  h.assertTrue(menu.action(player, revision, module.id(), "preview", ModuleRedstone.OUTPUT_FACE, 1, ""),
+    "Second output could not be previewed");
+  h.assertTrue(outlines.size() == 2 && outlines.getLast().kind() == MarkOutline.Kind.MARK
+    && outlines.getLast().endpoints().size() == 10, "Second face did not draw the numeral 2");
+  var middle = outlines.getLast().endpoints().stream().reduce(Vec3.ZERO, Vec3::add).scale(.1);
+  h.assertTrue(middle.distanceTo(second.world(core, true)) < .08, "Digit 2 was drawn at another face");
+
+  var saved = core.modules().save();
+  core.modules().load(saved);
+  module = core.modules().find(module.id());
+  h.assertTrue(module.anchors().equals(List.of(first, second)) && module.value("redstonePower") == 9,
+    "Saving and loading lost the outputs or the shared power");
+  core.tryActivate(player);
+  var redstone = new ModuleRedstone();
+  var faces = new HashMap<ModuleSignals.Face, Integer>();
+  var firstOutput = new ModuleSignals.Face(root.east(), Direction.WEST);
+  var secondOutput = new ModuleSignals.Face(root.north().west(), Direction.EAST);
+  try {
+   redstone.tick(core, faces, Set.of());
+   h.assertTrue(faces.getOrDefault(firstOutput, 0) == 9 && faces.getOrDefault(secondOutput, 0) == 9,
+     "Both faces must publish the configured strength: " + faces);
+   AnchorTransfers.replaced(h.getLevel(), root.north());
+   faces.clear();
+   redstone.tick(core, faces, Set.of());
+   h.assertTrue(faces.getOrDefault(firstOutput, 0) == 9 && !faces.containsKey(secondOutput),
+     "Damaging one face stopped or redirected the other");
+   var loaded = VirtualModule.load(module.save());
+   h.assertTrue(loaded.redstoneFaceInvalid(1) && !loaded.redstoneFaceInvalid(0), "Invalidation lost its face on reload");
+  } finally {
+   redstone.clear();
+   core.resetForCreative(player);
+  }
+  h.assertTrue(menu.action(player, core.modules().revision(), module.id(), "face_remove", ModuleRedstone.OUTPUT_FACE, 0, ""),
+    "Could not remove the first output");
+  h.assertTrue(module.anchors().equals(List.of(second)) && module.redstoneFaceInvalid(0), "Removing face 1 misnumbered its successor");
+  h.succeed();
+ }
+
+ @GameTest(template="combat", batch="redstone_output_face_limit")
+ public static void WirelessRedstoneAccepts64FacesAndRetainsInvalidationAfterRemoval(GameTestHelper h) {
+  var limit = (net.neoforged.neoforge.common.ModConfigSpec.IntValue) dev.sablelife.SableLifeServerConfig.SPEC.getValues().get("maximumRedstoneOutputFaces");
+  int previousLimit = limit.get(); limit.set(64);
+  try {
+  var level = h.getLevel();
+  var origin = h.absolutePos(new BlockPos(3, 40, 13));
+  var blocks = new ArrayList<BlockPos>();
+  for (int i = 0; i < 11; i++) {
+   var pos = origin.north(i);
+   level.setBlockAndUpdate(pos, i == 0 ? SableLife.HEART.get().defaultBlockState() : Blocks.IRON_BLOCK.defaultBlockState());
+   blocks.add(pos);
+  }
+  var body = SubLevelAssemblyHelper.assembleBlocks(level, origin, blocks,
+    new BoundingBox3i(origin.getX(), origin.getY(), origin.getZ() - 10, origin.getX(), origin.getY(), origin.getZ()));
+  var core = (HeartBlockEntity) level.getBlockEntity(body.getPlot().getCenterBlock());
+  var root = core.getBlockPos();
+  var module = core.modules().add("wireless_redstone");
+  var anchors = new ArrayList<ModuleAnchor>();
+  for (int i = 0; i < blocks.size(); i++) {
+   for (var direction : Direction.values()) anchors.add(ModuleAnchor.create(core, root.north(i), direction));
+  }
+  var initial = List.copyOf(anchors.subList(0, 8));
+  module.anchors(initial);
+  module.edit("trigger", 0, "");
+  module.edit("redstonePower", 9, "");
+  module.edit("redstoneFaces", 1, "");
+  core.modules().load(core.modules().save());
+  module = core.modules().find(module.id());
+  h.assertTrue(module.anchors().equals(initial), "Eight existing faces changed on read");
+
+  var player = TestActors.creative(level);
+  player.setPos(anchors.getFirst().world(core, false));
+  var outlines = new ArrayList<MarkOutline>();
+  player.connection = new ServerGamePacketListenerImpl(level.getServer(),
+    new Connection(PacketFlow.SERVERBOUND), player, CommonListenerCookie.createInitial(player.getGameProfile(), false)) {
+   @Override public void send(Packet<?> packet) {
+    if (packet instanceof ClientboundCustomPayloadPacket custom && custom.payload() instanceof MarkOutline outline)
+     outlines.add(outline);
+   }
+  };
+  var menu = new HeartDashboardMenu(1, player.getInventory(), core);
+  module.anchors(anchors.subList(0, 63));
+  var last = anchors.get(63);
+  int revision = core.modules().revision();
+  var request = new ModuleNetworking.Action(1, revision, module.id(), "mark", ModuleRedstone.OUTPUT_FACE, 63, "");
+  var buffer = new RegistryFriendlyByteBuf(Unpooled.buffer(), level.registryAccess());
+  try {
+   ModuleNetworking.Action.CODEC.encode(buffer, request);
+   var decoded = ModuleNetworking.Action.CODEC.decode(buffer);
+   h.assertTrue(decoded.equals(request) && menu.action(player, decoded.revision(), decoded.module(), decoded.operation(),
+     decoded.key(), decoded.value(), decoded.text()), "Dashboard refused the encoded 64th face request");
+  } finally {
+   buffer.release();
+  }
+  h.assertTrue(MarkingSessions.select(player, last.position(body), last.face()), "Could not mark face 64");
+  h.assertTrue(module.anchors().equals(anchors.subList(0, 64)), "Marking face 64 changed the preceding markers");
+  limit.set(16);
+  revision = core.modules().revision();
+  h.assertTrue(!menu.action(player, revision, module.id(), "mark", ModuleRedstone.OUTPUT_FACE, 64, ""), "Accepted face 65");
+  h.assertTrue(menu.action(player, revision, module.id(), "preview", ModuleRedstone.OUTPUT_FACE, 63, ""), "Could not preview face 64");
+  h.assertTrue(outlines.stream().anyMatch(p -> p.kind() == MarkOutline.Kind.MARK && p.endpoints().size() >= 14),
+    "Preview did not draw a two-digit marker");
+
+  core.tryActivate(player);
+  var redstone = new ModuleRedstone();
+  var faces = new HashMap<ModuleSignals.Face, Integer>();
+  try {
+   redstone.tick(core, faces, Set.of());
+   h.assertTrue(faces.size() == 64 && faces.values().stream().allMatch(power -> power == 9), "Expected 64 powered faces");
+   AnchorTransfers.replaced(level, root.north(5));
+   AnchorTransfers.replaced(level, last.position(body));
+   faces.clear();
+   redstone.tick(core, faces, Set.of());
+   h.assertTrue(faces.size() == 54, "Block replacement did not clear exactly the ten affected outputs");
+   module = VirtualModule.load(module.save());
+   h.assertTrue(!module.redstoneFaceInvalid(0) && module.redstoneFaceInvalid(31) && module.redstoneFaceInvalid(32)
+     && !module.redstoneFaceInvalid(59) && module.redstoneFaceInvalid(63), "High face bits changed on reload");
+  } finally {
+   redstone.clear();
+   core.resetForCreative(player);
+  }
+  var id = module.id();
+  h.assertTrue(menu.action(player, core.modules().revision(), id, "face_remove", ModuleRedstone.OUTPUT_FACE, 32, ""),
+    "Could not remove face 33");
+  var shifted = VirtualModule.load(core.modules().find(id).save());
+  h.assertTrue(shifted.redstoneFaceCount() == 63 && shifted.redstoneFaceInvalid(31) && !shifted.redstoneFaceInvalid(35)
+    && shifted.redstoneFaceInvalid(62), "Removing face 33 shifted the wrong invalidation flags");
+  h.succeed();
+  } finally { limit.set(previousLimit); }
  }
 
  @GameTest(template="combat",batch="alignment_face_diagnostic")

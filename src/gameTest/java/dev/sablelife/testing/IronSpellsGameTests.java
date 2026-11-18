@@ -25,6 +25,14 @@ public final class IronSpellsGameTests {
  @GameTest(template="combat",batch="iron_blood") public static void BloodSlashBoxEdgeHitsOnceThenExpires(GameTestHelper h){IronSpellsTestScenarios.blood(h,false);}
  @GameTest(template="combat",batch="iron_blood_hole") public static void BloodSlashDoesNotHitEmptyBodyBounds(GameTestHelper h){IronSpellsTestScenarios.blood(h,true);}
  @GameTest(template="combat",batch="iron_breath") public static void FireBreathUsesNativeDamageWindows(GameTestHelper h){IronSpellsTestScenarios.cone(h,0,false);}
+ @GameTest(template="combat",batch="iron_breath_hitbox")
+ public static void FireBreathKeepsRepeatedDamageWithoutIgnitingOverlappingReceivers(GameTestHelper h) {
+     IronSpellsTestScenarios.fireBreathHitboxes(h, false);
+ }
+ @GameTest(template="combat",batch="iron_breath_hybrid")
+ public static void FireBreathDoesNotDoubleChargeHybridBodyAndReceivers(GameTestHelper h) {
+     IronSpellsTestScenarios.fireBreathHitboxes(h, true);
+ }
  @GameTest(template="combat",batch="iron_cold") public static void ColdConeUsesNativeDamageWindows(GameTestHelper h){IronSpellsTestScenarios.cone(h,1,false);}
  @GameTest(template="combat",batch="iron_poison") public static void PoisonBreathUsesNativeDamageWindows(GameTestHelper h){IronSpellsTestScenarios.cone(h,2,false);}
  @GameTest(template="combat",batch="iron_breath_wall") public static void BreathDoesNotDamageThroughTerrain(GameTestHelper h){IronSpellsTestScenarios.cone(h,0,true);}
@@ -57,6 +65,9 @@ public final class IronSpellsGameTests {
  @GameTest(template="combat",batch="iron_ice_cast") public static void IceBlockNativeFallbackDoesNotRequireBodyEntityLockOn(GameTestHelper h){IronSpellsTestScenarios.iceCast(h);}
  @GameTest(template="combat",batch="iron_hybrid_missile") public static void HybridMissileUsesOneHealthPool(GameTestHelper h){IronSpellsTestScenarios.hybridProjectile(h,0);}
  @GameTest(template="combat",batch="iron_hybrid_fire_arrow") public static void HybridFireArrowRetainsDirectDamageWithoutVisualExplosionDuplication(GameTestHelper h){IronSpellsTestScenarios.hybridProjectile(h,1);}
+ @GameTest(template="combat",batch="iron_fire_arrow_entity_box") public static void FireArrowDamagesSingleEntityOnlyReceiver(GameTestHelper h){IronSpellsTestScenarios.projectileWithHitboxes(h,1,1,0);}
+ @GameTest(template="combat",batch="iron_fire_arrow_entity_boxes") public static void FireArrowDamagesOverlappingEntityOnlyReceiversOnce(GameTestHelper h){IronSpellsTestScenarios.projectileWithHitboxes(h,1,2,0);}
+ @GameTest(template="combat",batch="iron_fire_arrow_hybrid_boxes") public static void FireArrowDamagesOverlappingHybridReceiversOnce(GameTestHelper h){IronSpellsTestScenarios.projectileWithHitboxes(h,1,2,1);}
  @GameTest(template="combat",batch="iron_hybrid_fireball") public static void HybridFireballDoesNotAddTerrainExplosion(GameTestHelper h){IronSpellsTestScenarios.hybridProjectile(h,2);}
  @GameTest(template="combat",batch="iron_hybrid_blood") public static void HybridBloodSlashLifestealUsesActualLoss(GameTestHelper h){IronSpellsTestScenarios.hybridProjectile(h,3);}
 

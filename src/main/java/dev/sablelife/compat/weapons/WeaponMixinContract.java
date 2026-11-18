@@ -7,6 +7,9 @@ import org.objectweb.asm.tree.*;
 
 /** Check optional injection points without initializing weapon classes. */
 public final class WeaponMixinContract {
+    private static final String TACZ_BULLET = "com/tacz/guns/entity/EntityKineticBullet";
+    private static final String TACZ_BLOCK_HIT = "com/tacz/guns/api/event/server/AmmoHitBlockEvent";
+
     public record Result(boolean compatible,String reason){}
     public static Result inspect(String mixin,String target,Function<String,byte[]> provider){
         try {
@@ -15,6 +18,7 @@ public final class WeaponMixinContract {
             boolean valid=switch(mixin.substring(mixin.lastIndexOf('.')+1)){
                 case "TaczBodyDamageMixin" -> node.methods.stream().anyMatch(m->method(m,"onHitBlock","(Lnet/minecraft/world/phys/BlockHitResult;Lnet/minecraft/world/phys/Vec3;Lnet/minecraft/world/phys/Vec3;)V",false)
                         &&hasCall(m,"net/minecraft/world/entity/projectile/Projectile","onHitBlock","(Lnet/minecraft/world/phys/BlockHitResult;)V"));
+                case "TaczBreachingDamageMixin" -> taczBreaching(node, provider);
                 case "TaczBlockRayTraceMixin" -> node.methods.stream().anyMatch(m->method(m,"rayTraceBlocks","(Lnet/minecraft/world/level/Level;Lnet/minecraft/world/level/ClipContext;)Lnet/minecraft/world/phys/BlockHitResult;",true));
                 case "TaczBlastProfileMixin" -> field(node,"radius","F",provider,new HashSet<>())&&field(node,"power","F",provider,new HashSet<>());
                 case "NtglProjectileMixin" -> ntglProjectile(node);
@@ -43,6 +47,17 @@ public final class WeaponMixinContract {
             return new Result(valid,valid?"Injection contract matched":"Required method, field or invocation changed");
         }catch(RuntimeException failure){return new Result(false,"Cannot inspect target: "+failure.getClass().getSimpleName());}
     }
+    private static boolean taczBreaching(ClassNode handler, Function<String, byte[]> provider) {
+        var event = read(TACZ_BLOCK_HIT, provider);
+        var bullet = read(TACZ_BULLET, provider);
+        return handler.methods.stream().anyMatch(m -> method(m, "onAmmoHitBlock", "(L" + TACZ_BLOCK_HIT + ";)V", true)
+                    && hasCall(m, TACZ_BLOCK_HIT, "setCanceled", "(Z)V"))
+                && event != null && event.interfaces.contains("net/neoforged/bus/api/ICancellableEvent")
+                && event.methods.stream().anyMatch(m -> method(m, "getAmmo", "()L" + TACZ_BULLET + ";", false))
+                && event.methods.stream().anyMatch(m -> method(m, "getHitResult", "()Lnet/minecraft/world/phys/BlockHitResult;", false))
+                && bullet != null && bullet.methods.stream().anyMatch(m -> method(m, "getDamage", "(Lnet/minecraft/world/phys/Vec3;)F", false));
+    }
+
     private static boolean ntglProjectile(ClassNode node){
         String hit="Lnet/minecraft/world/phys/";
         String entity="Lnet/minecraft/world/entity/Entity;";

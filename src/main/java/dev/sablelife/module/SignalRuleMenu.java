@@ -23,6 +23,8 @@ public final class SignalRuleMenu extends AbstractContainerMenu {
  public boolean action(Player p,int revision,UUID id,String key,double value){
   if(heart==null||!stillValid(p))return false;var group=module.signalRules().find(id);
   if(!(heart.canEdit(p)&&ModuleAvailability.enabled(heart,module))||revision!=heart.modules().revision()||!Double.isFinite(value)){refresh();sendAllDataToRemote();return false;}
+  if ((key.equals("signalInput") || key.equals("signalCompare")) &&
+          (value > heart.wireless().size() || value > 0 && value == module.value("logicChannel"))) return false;
   boolean accepted=switch(key){case "add"->module.signalRules().add()!=null;case "delete"->module.signalRules().remove(id);case "up","down"->module.signalRules().move(id,key.equals("up")?-1:1);case "eventSource"-> {if(group==null||!module.type().equals("combat_event")||value!=Math.rint(value)||value<0||value>heart.modules().all().size())yield false;var source=value==0?null:heart.modules().all().get((int)value-1);if(source!=null&&!ModuleHitCounter.ATTACKS.contains(source.type()))yield false;group.source(source==null?null:source.id());yield true;}default->group!=null&&group.edit(key,value);};
   if(accepted){heart.modules().changed();heart.setChanged();}refresh();sendAllDataToRemote();return accepted;
  }

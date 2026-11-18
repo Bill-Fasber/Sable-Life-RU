@@ -50,10 +50,7 @@ public final class ModuleCombat {
         var active = new HashSet<UUID>();
         for (var module : heart.modules().all()) {
             if(heart.isControlCore()&&!module.type().equals("particles"))continue;
-            if (supported(module.type()) && heart.health().state() == dev.sablelife.heart.HeartState.ALIVE
-                    && !module.detached() && HeartModules.status(module, heart).equals("disconnected")) {
-                module.detach(); heart.setChanged();
-            }
+            if (supported(module.type())) HeartModules.latchDetachedMark(module, heart);
             if (!supported(module.type()) || !HeartModules.triggered(module, heart)) { states.remove(module.id()); continue; }
             active.add(module.id()); var state = states.computeIfAbsent(module.id(), ignored -> new State());
             switch (module.type()) {

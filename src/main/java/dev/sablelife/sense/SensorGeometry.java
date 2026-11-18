@@ -1,6 +1,9 @@
 package dev.sablelife.sense;
 
 import dev.sablelife.attack.ContactBox;
+import dev.sablelife.heart.HeartBlockEntity;
+import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniond;
 import net.minecraft.server.level.ServerLevel;
@@ -9,6 +12,24 @@ import net.minecraft.world.phys.HitResult;
 import dev.sablelife.compat.sable.SableBodyProbe;
 
 public final class SensorGeometry {
+    private static final int MAX_COMMAND_SIGHT_CHUNKS = 128;
+
+    /** Commanded targets can lie outside the module radius. Keep the longer sight check in loaded terrain. */
+    public static boolean commandVisible(ServerLevel level, HeartBlockEntity heart, Vec3 start, Vec3 point,
+                                         java.util.UUID target) {
+        double chunkSize = SectionPos.SECTION_SIZE;
+        var from = new Vec3(start.x / chunkSize, .5, start.z / chunkSize);
+        var to = new Vec3(point.x / chunkSize, .5, point.z / chunkSize);
+        var chunks = level.getChunkSource();
+        int[] visited = {0};
+        boolean loaded = BlockGetter.traverseBlocks(from, to, chunks, (source, column) ->
+                ++visited[0] > MAX_COMMAND_SIGHT_CHUNKS || source.getChunkNow(column.getX(), column.getZ()) == null
+                        ? Boolean.FALSE : null, source -> true);
+        if (!loaded) return false;
+        return visible(level, heart.creatureId(), start, point, target,
+                new java.util.HashSet<>(SableBodyProbe.inspect(level, heart.getBlockPos()).connectedBodies()));
+    }
+
     /** Leave the complete rotated voxel, including diagonal rays, before checking occlusion. */
     public static Vec3 sightStart(Vec3 center, Vec3 delta, Quaterniond orientation) {
         var ray = delta.normalize();

@@ -21,6 +21,40 @@ public final class HeartWireless {
     private boolean legacyChannels;
     private long elapsed, lastTick = Long.MIN_VALUE;
     private java.util.List<Integer> configuredChannels;
+    private java.util.List<Integer> faceChannels;
+    private int faceRevision;
+
+    public int faceRevision() { return faceRevision; }
+
+    private void facesChanged() {
+        faceChannels = null;
+        faceRevision++;
+        heart.setChanged();
+    }
+
+    public int strength(int index) {
+        if (index < 0 || index >= size()) return 0;
+        return channels.get(index).receiving() ? input(index) : output(index);
+    }
+
+    public void collectOutputFaces(java.util.Map<dev.sablelife.module.ModuleSignals.Face,Integer> signals) {
+        if (!master || !heart.operational()) return;
+        if (faceChannels == null) {
+            faceChannels = java.util.stream.IntStream.range(0,size())
+                    .filter(i -> !channels.get(i).outputFaces().isEmpty()).boxed().toList();
+        }
+        for (int index : faceChannels) {
+            var channel = channels.get(index);
+            if (!channel.configured()) continue;
+            int power = strength(index);
+            for (var anchor : channel.outputFaces()) {
+                if (!anchor.status(heart).equals("valid")) continue;
+                var target = anchor.position(anchor.body(heart)).relative(anchor.face());
+                if (!heart.getLevel().hasChunkAt(target)) continue;
+                signals.merge(new dev.sablelife.module.ModuleSignals.Face(target, anchor.face().getOpposite()), power, Math::max);
+            }
+        }
+    }
     private final dev.sablelife.module.ProgramSignals programSources = new dev.sablelife.module.ProgramSignals();
     private java.util.Map<Integer, Integer> programOutputs = java.util.Map.of();
     public record ModuleOutput(net.minecraft.world.item.ItemStack red, net.minecraft.world.item.ItemStack blue, int power) {}
@@ -111,7 +145,9 @@ public final class HeartWireless {
         var channel = new WirelessChannel();
         channel.set(0, 1);
         channel.onChange(this::configurationChanged);
+        channel.onFacesChanged(this::facesChanged);
         channels.add(channel);
+        facesChanged();
         configuredChannels = null;
         latchChannels = null;
         heart.setChanged();
@@ -119,7 +155,7 @@ public final class HeartWireless {
     }
     public boolean remove(int index) {
         if (index < 0 || index >= channels.size()) return false;
-        stop(); channels.remove(index);
+        stop(); channels.remove(index); facesChanged();
         for(var c:channels){int reset=c.value(8);if(reset==index+1)c.set(8,0);else if(reset>index+1)c.set(8,reset-1);}
         configuredChannels=null;latchChannels=null;
         boolean changed = false;
@@ -134,11 +170,12 @@ public final class HeartWireless {
             var channel = channels.get(i);
             if (!channel.name().isEmpty() || !channel.first().isEmpty() || !channel.second().isEmpty() || channel.value(0) != 0
                     || channel.value(1) != 0 || channel.value(2) != 20 || channel.value(3) != 20
-                    || channel.value(4) != 15 || channel.value(5) != 1 || channel.value(7)!=0 || channel.value(8)!=0 || channel.receiving()) keep = i + 1;
+                    || channel.value(4) != 15 || channel.value(5) != 1 || channel.value(7)!=0 || channel.value(8)!=0 || channel.receiving() || !channel.outputFaces().isEmpty()) keep = i + 1;
         }
         for (var module : heart.modules().all()) if (module.value("trigger") >= 2)
             keep = Math.max(keep, Math.min(channels.size(), (int) module.value("channel") + 1));
         while (channels.size() > keep) channels.removeLast();
+        facesChanged();
         configuredChannels=null;latchChannels=null;legacyChannels = false;
     }
     public boolean master() { return master; }
@@ -218,10 +255,11 @@ public final class HeartWireless {
         var list = tag.getList("Channels", 10);
         legacyChannels = !tag.getBoolean("DynamicChannels");
         channels.clear();
+        facesChanged();
         configuredChannels=null;latchChannels=null;
         // Old saves retain all 16 numbers, including disabled slots referenced by modules.
         int count = tag.getBoolean("DynamicChannels") ? list.size() : list.isEmpty() ? 0 : Math.max(16, list.size());
-        for (int i = 0; i < Math.min(CHANNELS, count); i++) { var channel=i < list.size() ? WirelessChannel.load(list.getCompound(i), registries) : new WirelessChannel(); channel.onChange(this::configurationChanged);channels.add(channel); }
+        for (int i = 0; i < Math.min(CHANNELS, count); i++) { var channel=i < list.size() ? WirelessChannel.load(list.getCompound(i), registries) : new WirelessChannel(); channel.onChange(this::configurationChanged);channel.onFacesChanged(this::facesChanged);channels.add(channel); }
     }
     private final class Transmitter implements IRedstoneLinkable {
         private final ServerLevel level;

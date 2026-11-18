@@ -2,6 +2,8 @@ package dev.sablelife.testing;
 
 import java.util.*;
 import dev.sablelife.SableLife;
+import dev.sablelife.attack.AttackHitCredit;
+import dev.sablelife.attack.ModuleShot;
 import dev.sablelife.heart.*;
 import dev.sablelife.module.*;
 import dev.sablelife.ownership.*;
@@ -12,6 +14,10 @@ import dev.ryanhcode.sable.companion.math.BoundingBox3i;
 import net.minecraft.core.*;
 import net.minecraft.nbt.*;
 import net.minecraft.gametest.framework.*;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.GameType;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.*;
@@ -19,6 +25,97 @@ import net.neoforged.neoforge.gametest.*;
 
 @GameTestHolder("sablelife_blueprint_spawn_tests") @PrefixGameTestTemplate(false)
 public final class BlueprintSpawnGameTests {
+    @GameTest(template="combat", batch="wild_contact_sound", timeoutTicks=100)
+    public static void WildAndManuallyPlacedBlueprintsRetainContactSound(GameTestHelper h) throws Exception {
+        var level = h.getLevel();
+        var server = level.getServer();
+        var player = admin(h);
+        var source = template(h, 1, 8, core -> {
+            var sound = core.modules().add("trigger_sound");
+            sound.anchors(List.of(ModuleAnchor.create(core, core.getBlockPos().east(), Direction.DOWN)));
+            sound.edit("trigger", 0, "");
+            sound.edit("contactMode", 1, "");
+            sound.edit("contactDistance", .5, "");
+            sound.edit("contactSound", 0, "minecraft:block.note_block.bass");
+        });
+        var name = "wild_contact_" + UUID.randomUUID();
+        var wildPath = dev.rew1nd.sableschematicapi.blueprint.SableBlueprintRootFiles.path(server, name);
+        var manualPath = dev.rew1nd.sableschematicapi.blueprint.SableBlueprintFiles.path(server, name);
+        var target = h.absolutePos(new BlockPos(4, 24, 18));
+        level.setBlockAndUpdate(target, Blocks.STONE.defaultBlockState());
+        player.setPos(target.getX() + .5, target.getY() + 3, target.getZ() - 23.5);
+        player.setYRot(0);
+        player.setXRot(0);
+
+        HeartBlockEntity manual;
+        HeartBlockEntity wild;
+        var encounters = new WildEncounters();
+        try {
+            for (var path : new LinkedHashSet<>(List.of(wildPath, manualPath))) {
+                java.nio.file.Files.createDirectories(path.getParent());
+                NbtIo.writeCompressed(source.tag, path);
+            }
+            encounters.loadBlueprint(level, "", name, true);
+            encounters.configure(level, name, 4, 0, 30, false, false, FactionRegistry.WILDS,
+                    new WildEncounters.Conditions(true, false, false, Set.of(), 0), 1);
+            var attempt = encounters.attemptPreviewOrSpawn(player, name, false);
+            h.assertTrue(attempt.success(), "Wild Test Spawn failed: " + attempt.reason());
+            wild = LoadedCoreIndex.all(level).stream().filter(core -> core != source.core
+                    && core.creatureName().equals(source.core.creatureName())).findFirst().orElseThrow();
+
+            var bodies = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+            var existing = new HashSet<UUID>();
+            bodies.getAllSubLevels().forEach(body -> existing.add(body.getUniqueId()));
+            var destination = Vec3.atCenterOf(target.offset(12, 5, 0));
+            level.getChunkAt(BlockPos.containing(destination));
+            var placed = dev.rew1nd.sableschematicapi.blueprint.tool.BlueprintToolService.load(server, level, destination, name);
+            h.assertTrue(placed.success() && placed.affectedSubLevels() == 1, "Manual Photomancy placement failed: " + placed.message());
+            var body = bodies.getAllSubLevels().stream().filter(candidate -> !existing.contains(candidate.getUniqueId()))
+                    .findFirst().orElseThrow();
+            manual = (HeartBlockEntity) level.getBlockEntity(body.getPlot().getCenterBlock());
+            h.assertTrue(manual != null && manual.health().state() == HeartState.DORMANT, "Manual copy did not start dormant");
+            manual.tryActivate(player);
+        } finally {
+            java.nio.file.Files.deleteIfExists(wildPath);
+            java.nio.file.Files.deleteIfExists(manualPath);
+        }
+
+        h.assertTrue(manual.health().state() == HeartState.ALIVE, "Manually placed core did not activate");
+        h.startSequence().thenWaitUntil(() -> h.assertTrue(wild.health().state() == HeartState.ALIVE, "Wild core did not activate"))
+                .thenExecute(() -> {
+                    assertRestoredContactSound(h, manual, "Manual copy");
+                    assertRestoredContactSound(h, wild, "Wild copy");
+                }).thenSucceed();
+    }
+
+    private static void assertRestoredContactSound(GameTestHelper h, HeartBlockEntity core, String label) {
+        var level = h.getLevel();
+        var sound = core.modules().all().stream().filter(module -> module.type().equals("trigger_sound")).findFirst().orElseThrow();
+        h.assertTrue(sound.anchors().size() == 1 && HeartModules.status(sound, core).equals("valid"), label + " lost its contact marker");
+        var anchor = sound.anchors().getFirst();
+        h.assertTrue(anchor.face() == Direction.DOWN && level.getBlockState(anchor.position(anchor.body(core))).is(Blocks.IRON_BLOCK),
+                label + " moved the contact marker to the wrong face or block");
+        h.assertTrue(sound.value("contactDistance") == .5 && sound.value("contactMode") == 1 && sound.hasSound("contactSound"),
+                label + " lost its contact settings or sound");
+        h.assertTrue(HeartModules.triggered(sound, core), label + " did not enable the trigger");
+        var events = core.modules().events();
+        long before = events.emittedSounds();
+        events.tick(core);
+        h.assertTrue(!ModuleEvents.contact(level, core, sound) && events.emittedSounds() == before, label + " triggered in the air");
+        var ground = BlockPos.containing(ModuleEvents.contactStart(core, sound)
+                .add(ModuleEvents.contactDirection(core, sound).scale(.25)));
+        var previous = level.getBlockState(ground);
+        level.setBlockAndUpdate(ground, Blocks.STONE.defaultBlockState());
+        try {
+            h.assertTrue(ModuleEvents.contact(level, core, sound), label + " did not detect ground");
+            events.tick(core);
+            events.tick(core);
+            h.assertTrue(events.emittedSounds() == before + 1, label + " did not emit exactly one contact sound");
+        } finally {
+            level.setBlockAndUpdate(ground, previous);
+        }
+    }
+
     @GameTest(template="combat",batch="wild_disk_only_tracking")
     public static void MissingMemoryEntryPreservesSavedStructureAndQueuedCleanupUntilConfirmedRemoval(GameTestHelper h)throws Exception{
         var level=h.getLevel();var server=level.getServer();var body=UUID.randomUUID();
@@ -115,10 +212,22 @@ public final class BlueprintSpawnGameTests {
         }finally{chunk.fillBiomesFromNoise((x,y,z,climate)->original.get(new BlockPos(x,y,z)),sampler);java.nio.file.Files.deleteIfExists(path);}
     }
 
-    private static final class AnnouncementListener extends net.neoforged.neoforge.common.util.FakePlayer {
+    private static final class AnnouncementListener extends net.minecraft.server.level.ServerPlayer {
         final List<String> messages=new ArrayList<>();
         final List<net.minecraft.network.chat.Component> styledMessages=new ArrayList<>();
-        AnnouncementListener(net.minecraft.server.level.ServerLevel level){super(level,new com.mojang.authlib.GameProfile(UUID.randomUUID(),"SpawnListener"));}
+        final List<net.minecraft.network.chat.Component> titles=new ArrayList<>();
+        final io.netty.channel.embedded.EmbeddedChannel channel;
+        AnnouncementListener(net.minecraft.server.level.ServerLevel level){
+            super(level.getServer(),level,new com.mojang.authlib.GameProfile(UUID.randomUUID(),"SpawnListener"),net.minecraft.server.level.ClientInformation.createDefault());
+            var transport=new net.minecraft.network.Connection(net.minecraft.network.protocol.PacketFlow.SERVERBOUND);
+            channel=new io.netty.channel.embedded.EmbeddedChannel(transport);
+            connection=new net.minecraft.server.network.ServerGamePacketListenerImpl(level.getServer(),transport,this,
+                    net.minecraft.server.network.CommonListenerCookie.createInitial(getGameProfile(),false)){
+                @Override public void send(net.minecraft.network.protocol.Packet<?> packet,net.minecraft.network.PacketSendListener callback){
+                    if(packet instanceof net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket title)titles.add(title.text());
+                }
+            };
+        }
         @Override public void sendSystemMessage(net.minecraft.network.chat.Component message,boolean overlay){messages.add(message.getString());styledMessages.add(message.copy());}
     }
 
@@ -434,9 +543,794 @@ public final class BlueprintSpawnGameTests {
     private record Template(CompoundTag tag,HeartBlockEntity core){}
     private static net.neoforged.neoforge.common.util.FakePlayer admin(GameTestHelper h){var p=new net.neoforged.neoforge.common.util.FakePlayer(h.getLevel(),new com.mojang.authlib.GameProfile(UUID.randomUUID(),"BlueprintAdmin")){@Override public boolean canUseGameMasterBlocks(){return isCreative();}};p.setGameMode(GameType.CREATIVE);return p;}
     private static Template template(GameTestHelper h,int kind,int offset){return template(h,kind,offset,core->{});}
-    private static Template template(GameTestHelper h,int kind,int offset,java.util.function.Consumer<HeartBlockEntity> configureCore){var l=h.getLevel();var p=h.absolutePos(new BlockPos(4+offset,40,4));l.setBlockAndUpdate(p,kind==0?Blocks.IRON_BLOCK.defaultBlockState():kind==3?SableLife.REDSTONE_CORE.get().defaultBlockState():SableLife.HEART.get().defaultBlockState());l.setBlockAndUpdate(p.east(),kind==2?SableLife.HEART.get().defaultBlockState():Blocks.IRON_BLOCK.defaultBlockState());var body=SubLevelAssemblyHelper.assembleBlocks(l,p,List.of(p,p.east()),new BoundingBox3i(p.getX(),p.getY(),p.getZ(),p.getX()+1,p.getY(),p.getZ()));var c=l.getBlockEntity(body.getPlot().getCenterBlock()) instanceof HeartBlockEntity core?core:null;if(c!=null&&!c.isControlCore())c.editCore(admin(h),"name",0,"Spawn"+UUID.randomUUID().toString().substring(0,8));if(c!=null)configureCore.accept(c);var tag=dev.rew1nd.sableschematicapi.blueprint.SableBlueprintExporter.exportSelected(l,new Vec3(body.logicalPose().position().x(),body.logicalPose().position().y(),body.logicalPose().position().z()),List.of(body.getUniqueId())).save();return new Template(tag,c);}
+    private static Template template(GameTestHelper h,int kind,int offset,java.util.function.Consumer<HeartBlockEntity> configureCore){var l=h.getLevel();var p=h.absolutePos(new BlockPos(4+offset,40,4));l.setBlockAndUpdate(p,kind==0?Blocks.IRON_BLOCK.defaultBlockState():kind==3?SableLife.REDSTONE_CORE.get().defaultBlockState():kind==4?SableLife.SURVIVAL_LIFE_CORE.get().defaultBlockState():SableLife.HEART.get().defaultBlockState());l.setBlockAndUpdate(p.east(),kind==2?SableLife.HEART.get().defaultBlockState():Blocks.IRON_BLOCK.defaultBlockState());var body=SubLevelAssemblyHelper.assembleBlocks(l,p,List.of(p,p.east()),new BoundingBox3i(p.getX(),p.getY(),p.getZ(),p.getX()+1,p.getY(),p.getZ()));var c=l.getBlockEntity(body.getPlot().getCenterBlock()) instanceof HeartBlockEntity core?core:null;if(c!=null&&!c.isControlCore())c.editCore(admin(h),"name",0,"Spawn"+UUID.randomUUID().toString().substring(0,8));if(c!=null)configureCore.accept(c);var tag=dev.rew1nd.sableschematicapi.blueprint.SableBlueprintExporter.exportSelected(l,new Vec3(body.logicalPose().position().x(),body.logicalPose().position().y(),body.logicalPose().position().z()),List.of(body.getUniqueId())).save();return new Template(tag,c);}
+    @GameTest(template="combat", batch="blueprint_module_capacity", timeoutTicks=120)
+    public static void NativeBlueprintPreservesFullModuleList(GameTestHelper h) throws java.io.IOException {
+        var level = h.getLevel();
+        var source = template(h, 1, 0, core -> {
+            var list = new ListTag();
+            for (int i = 0; i < HeartModules.LIMIT; i++) {
+                var module = new VirtualModule("item_display");
+                module.edit("name", 0, "Display " + i);
+                module.edit("displaySize", 0.75, "");
+                module.anchors(List.of(ModuleAnchor.create(core, core.getBlockPos().east(), Direction.UP)));
+                list.add(module.save());
+            }
+            var data = new CompoundTag();
+            data.put("Modules", list);
+            core.modules().load(data);
+        });
+        var bytes = new java.io.ByteArrayOutputStream();
+        NbtIo.writeCompressed(source.tag, bytes);
+        var restored = NbtIo.readCompressed(new java.io.ByteArrayInputStream(bytes.toByteArray()), NbtAccounter.create(16 * 1024 * 1024));
+        var build = PhotomancyRespawnBridge.createSpawn(SpawnTemplateBridge.inspect(restored).template(),
+                new CompoundTag(), h.absoluteVec(new Vec3(6, 40, 16)), new org.joml.Quaterniond());
+        long start = System.nanoTime();
+        h.assertTrue(build.step(level).equals("DONE"), "Native full-capacity blueprint placement failed");
+        System.out.println("MODULE_CAPACITY_BLUEPRINT_PLACE_MS=" + (System.nanoTime() - start) / 1e6);
+        h.succeedWhen(() -> {
+            var copy = build.heart(level);
+            h.assertTrue(copy != null, "Placed core missing");
+            var modules = copy.modules().all();
+            h.assertTrue(modules.size() == HeartModules.LIMIT, "Blueprint dropped saved modules");
+            var last = modules.getLast();
+            h.assertTrue(last.name().equals("Display " + (HeartModules.LIMIT - 1)) && last.value("displaySize") == 0.75
+                    && last.anchors().size() == 1 && last.anchors().getFirst().status(copy).equals("valid"),
+                    "Native placement lost the last module settings or mark");
+        });
+    }
+
     private static HeartBlockEntity core(GameTestHelper h){return template(h,1,0).core;}
     private static VirtualModule module(GameTestHelper h,HeartBlockEntity c,CompoundTag template){var m=c.modules().add("blueprint_spawn");m.edit("spawnAnchor",1,"");m.arenaCenter(h.absoluteVec(new Vec3(4,25,12)),h.getLevel().dimension().location().toString());m.edit("spawnDelay",0,"");m.edit("spawnCooldown",1,"");BlueprintSpawns.install(c,m,"test",SpawnTemplateBridge.inspect(template));return m;}
+    @GameTest(template="combat",batch="arena_blueprint_stage",timeoutTicks=380)
+    public static void ArenaWaitsForNextStageAndAnnouncesFinalDefeat(GameTestHelper h)throws Exception {
+        testArenaStages(h,false,0);
+    }
+
+    @GameTest(template="combat", batch="arena_two_boundaries", timeoutTicks=320)
+    public static void OneCoreAllowsTwoBoundariesButOnlyOneRespawnRecord(GameTestHelper h) {
+        var level = h.getLevel();
+        var boss = core(h);
+        boss.configure(100, 0);
+        var player = admin(h);
+        var center = ModuleArena.corePosition(boss);
+        var dimension = level.dimension().location().toString();
+        var first = boss.modules().add("arena");
+        first.arenaCenter(center, dimension);
+        first.edit("arenaRadius", 48, "");
+        first.edit("arenaRespawnEnabled", 1, "");
+        first.edit("arenaRespawnDelay", 100, "");
+        first.edit("arenaRespawnBattleTimer", 1, "");
+        var second = boss.modules().add("arena");
+        var secondCenter = center.add(12, 0, 0);
+        second.arenaCenter(secondCenter, dimension);
+        second.edit("arenaRadius", 4, "");
+        second.edit("arenaForceReturn", 1, "");
+        second.edit("arenaRespawnEnabled", 1, "");
+        player.setPos(center);
+        h.assertTrue(ArenaRespawns.record(player, boss, first), "Could not record the first arena");
+        h.assertTrue(!ArenaRespawns.record(player, boss, second), "Second arena acquired another respawn record");
+        h.assertTrue(ArenaRespawns.snapshot(boss, first.id()).getBoolean("Recorded")
+                && !ArenaRespawns.snapshot(boss, second.id()).getBoolean("Recorded"), "Wrong arena owns the respawn");
+        var original = boss.creatureId();
+        String name = boss.creatureName();
+        boss.tryActivate(player);
+        h.assertTrue(boss.modules().damageBoxes.bodyDamage(boss, player, boss.getBlockPos(), 5, false, false),
+                "Could not start the battle timer");
+        var record = arenaRecord(h, original);
+        h.assertTrue(record.getLong("BattleDeadline") > level.getGameTime() && record.getUUID("Module").equals(first.id()),
+                "Expected the single timer to belong to the recorded arena");
+        h.startSequence().thenWaitUntil(() -> h.assertTrue(
+                ModuleArena.horizontalDistance(ModuleArena.corePosition(boss), secondCenter) < 2,
+                "The second boundary did not return the boss")).thenExecute(() -> {
+            h.assertTrue(boss.forceDeath(), "Could not defeat the boss in the second boundary");
+        }).thenWaitUntil(() -> {
+            var rebuilt = aliveNamed(level, name);
+            h.assertTrue(rebuilt.size() == 1 && !rebuilt.getFirst().creatureId().equals(original), "Expected one respawn");
+            var restored = rebuilt.getFirst();
+            var arenas = restored.modules().all().stream().filter(m -> m.type().equals("arena")).toList();
+            h.assertTrue(arenas.size() == 2, "Respawn lost a boundary module");
+            h.assertTrue(arenas.stream().filter(m -> ArenaRespawns.snapshot(restored, m.id()).getBoolean("Recorded")).count() == 1,
+                    "Respawn did not preserve the single arena record");
+        }).thenSucceed();
+    }
+
+    @GameTest(template="combat", batch="arena_multiple_blueprint_roles", timeoutTicks=390)
+    public static void BossDeathAllowsOneNextStageAndTwoIndependentLives(GameTestHelper h) {
+        var level = h.getLevel();
+        var boss = core(h);
+        boss.configure(100, 0);
+        var player = admin(h);
+        var center = ModuleArena.corePosition(boss);
+        var dimension = level.dimension().location().toString();
+        var arena = boss.modules().add("arena");
+        arena.arenaCenter(center, dimension);
+        arena.edit("arenaRespawnEnabled", 1, "");
+        arena.edit("arenaRespawnDelay", 100, "");
+        arena.edit("arenaRespawnBattleTimer", 1, "");
+        int channel = boss.wireless().add();
+        boss.wireless().channel(channel).set(0, 1);
+        boss.wireless().channel(channel).set(6, 4);
+        boss.wireless().channel(channel).frequency(false, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT));
+        boss.wireless().channel(channel).frequency(true, new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.REDSTONE));
+        var death = boss.modules().add("combat_event").signalRules().rows().getFirst();
+        death.edit("eventKind", 3);
+        death.edit("eventChannel", channel + 1);
+        var names = new java.util.ArrayList<String>();
+        for (int i = 0; i < 4; i++) {
+            var source = template(h, 1, 8 + i * 4, core -> core.configure(100, 0));
+            names.add(source.core.creatureName());
+            var spawn = module(h, boss, source.tag);
+            spawn.arenaCenter(center.add(5 - i * 4, 5, 6), dimension);
+            spawn.edit("spawnArenaRole", i < 2 ? 1 : 0, "");
+            spawn.edit("spawnActivate", 1, "");
+            spawn.edit("trigger", 2, "");
+            spawn.edit("channel", channel, "");
+        }
+        player.setPos(center);
+        h.assertTrue(ArenaRespawns.record(player, boss, arena), "Arena capture failed");
+        String bossName = boss.creatureName();
+        var original = boss.creatureId();
+        boss.tryActivate(player);
+        h.assertTrue(boss.modules().damageBoxes.bodyDamage(boss, player, boss.getBlockPos(), 5, false, false),
+                "Could not start the battle timer");
+        long deadline = arenaRecord(h, original).getLong("BattleDeadline");
+        h.assertTrue(boss.forceDeath(), "Boss death did not trigger generation");
+        h.startSequence().thenIdle(130).thenExecute(() -> {
+            var firstStage = aliveNamed(level, names.get(0));
+            var secondStage = aliveNamed(level, names.get(1));
+            h.assertTrue(firstStage.size() + secondStage.size() == 1, "Expected exactly one next stage");
+            var stage = firstStage.isEmpty() ? secondStage.getFirst() : firstStage.getFirst();
+            h.assertTrue(ArenaRespawns.inheritedBoundary(stage) != null, "The next stage has no inherited arena");
+            h.assertTrue(arenaRecord(h, original).getLong("BattleDeadline") == deadline
+                    && aliveNamed(level, bossName).isEmpty(), "First stage respawned while the next stage was alive");
+            for (String name : names.subList(2, 4)) {
+                var independent = aliveNamed(level, name);
+                h.assertTrue(independent.size() == 1 && ArenaRespawns.inheritedBoundary(independent.getFirst()) == null,
+                        "An independent life failed to spawn or inherited the arena");
+            }
+            h.assertTrue(stage.forceDeath(), "Could not defeat the next stage");
+        }).thenWaitUntil(() -> {
+            var reborn = aliveNamed(level, bossName);
+            h.assertTrue(reborn.size() == 1 && !reborn.getFirst().creatureId().equals(original),
+                    "Expected one first-stage respawn after the next stage died");
+            for (String name : names.subList(2, 4)) {
+                h.assertTrue(aliveNamed(level, name).size() == 1, "Arena reset removed an independent life");
+            }
+        }).thenSucceed();
+    }
+
+    @GameTest(template="combat",batch="arena_blueprint_timeout",timeoutTicks=460)
+    public static void ArenaTimeoutClearsActiveSecondStageAndSummons(GameTestHelper h)throws Exception {
+        testArenaStages(h,true,0);
+    }
+
+    @GameTest(template="combat",batch="arena_pending_stage_timeout",timeoutTicks=460)
+    public static void ArenaTimeoutCancelsQueuedSecondStage(GameTestHelper h)throws Exception {
+        testArenaStages(h,true,260);
+    }
+
+    private static void testArenaStages(GameTestHelper h, boolean timeout, int stageDelay)throws Exception {
+        testArenaStages(h, timeout, stageDelay, false);
+    }
+
+    @GameTest(template="combat",batch="arena_recursive_blueprints",timeoutTicks=380)
+    public static void ArenaAllowsStageSummonButDoesNotChainStageOrSelfReferencingMinion(GameTestHelper h)throws Exception {
+        testArenaStages(h, false, 0, true);
+    }
+
+    private static void testArenaStages(GameTestHelper h, boolean timeout, int stageDelay, boolean nested)throws Exception {
+        testArenaStages(h,timeout,stageDelay,nested,null);
+    }
+
+    static void prepareArenaRestart(GameTestHelper h, java.nio.file.Path manifest)throws Exception {
+        testArenaStages(h,false,200,true,manifest);
+    }
+
+    private static void testArenaStages(GameTestHelper h, boolean timeout, int stageDelay, boolean nested,
+                                        java.nio.file.Path restartManifest)throws Exception {
+        var level=h.getLevel();
+        var server=level.getServer();
+        var first=core(h);
+        first.configure(100,0);
+        for(int x=2;x<=8;x++) for(int z=17;z<=23;z++)
+            level.setBlockAndUpdate(h.absolutePos(new BlockPos(x,4,z)),Blocks.STONE.defaultBlockState());
+        var player=admin(h);
+        String minionFileName="arena_minion_"+UUID.randomUUID();
+        String fileName="arena_stage_"+UUID.randomUUID();
+        var minionFile=dev.rew1nd.sableschematicapi.blueprint.SableBlueprintRootFiles.path(server,minionFileName);
+        var file=dev.rew1nd.sableschematicapi.blueprint.SableBlueprintRootFiles.path(server,fileName);
+        java.nio.file.Files.createDirectories(minionFile.getParent());
+        var placeholder = nested ? template(h,1,24) : null;
+        if (nested) {
+            NbtIo.writeCompressed(placeholder.tag,minionFile);
+            NbtIo.writeCompressed(placeholder.tag,file);
+        }
+        var minion=template(h,1,16,core->{
+            core.configure(100,0);
+            if (nested) {
+                var recursive = follow(h,core,placeholder.tag);
+                recursive.edit("startDistance",8,"");
+                recursive.edit("spawnActivate",1,"");
+                recursive.edit("spawnLimit",64,"");
+                player.setPos(ModuleArena.corePosition(core));
+                h.assertTrue(BlueprintSpawns.select(player,core,recursive,minionFileName),"Could not author self-referencing minion");
+            }
+        });
+        String minionName=minion.core.creatureName();
+        NbtIo.writeCompressed(minion.tag,minionFile);
+        if (nested) {
+            var recursive = minion.core.modules().all().getFirst();
+            h.assertTrue(BlueprintSpawns.clear(player,minion.core,recursive),"Could not release source-only minion selection");
+        }
+        var second=template(h,1,8,core->{
+            core.configure(100,0);
+            var summon=follow(h,core,minion.tag);
+            summon.edit("startDistance",8,"");
+            summon.edit("spawnActivate",1,"");
+            summon.edit("spawnArenaRole",2,"");
+            summon.edit("trigger",0,"");
+            player.setPos(ModuleArena.corePosition(core));
+            h.assertTrue(BlueprintSpawns.select(player,core,summon,minionFileName),"Could not select minion blueprint");
+            if (nested) {
+                var recursive = module(h,core,placeholder.tag);
+                recursive.edit("spawnArenaRole",1,"");
+                recursive.edit("spawnActivate",1,"");
+                int deathChannel = core.wireless().add();
+                core.wireless().channel(deathChannel).set(0,1);
+                core.wireless().channel(deathChannel).set(6,4);
+                core.wireless().channel(deathChannel).frequency(false,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT));
+                core.wireless().channel(deathChannel).frequency(true,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.REDSTONE));
+                recursive.edit("trigger",2,"");
+                recursive.edit("channel",deathChannel,"");
+                var ownDeath = core.modules().add("combat_event").signalRules().rows().getFirst();
+                ownDeath.edit("eventKind",3);
+                ownDeath.edit("eventChannel",deathChannel+1);
+                h.assertTrue(BlueprintSpawns.select(player,core,recursive,fileName),"Could not author self-referencing second stage");
+            }
+        });
+        String firstName=first.creatureName(),secondName=second.core.creatureName();
+        if (nested) {
+            var recursive = second.core.modules().all().stream()
+                    .filter(m->m.type().equals("blueprint_spawn")&&m.value("spawnArenaRole")==1).findFirst().orElseThrow();
+            h.assertTrue(BlueprintSpawns.clear(player,second.core,recursive),"Could not release source-only boss selection");
+        }
+        var arena=first.modules().add("arena");
+        var center=ModuleArena.corePosition(first);
+        arena.arenaCenter(center,level.dimension().location().toString());
+        arena.edit("arenaRespawnEnabled",1,"");
+        arena.edit("arenaRespawnDelay",100,"");
+        arena.edit("arenaRespawnBattleTimer",1,"");
+        if(timeout)arena.edit("arenaRespawnBattleLimit",220,"");
+        var spawn=module(h,first,second.tag);
+        spawn.edit("spawnArenaRole",1,"");
+        spawn.edit("spawnActivate",1,"");
+        spawn.edit("spawnDelay",stageDelay,"");
+        int channel=first.wireless().add();
+        first.wireless().channel(channel).set(0,1);
+        first.wireless().channel(channel).set(6,4);
+        first.wireless().channel(channel).frequency(false,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.IRON_INGOT));
+        first.wireless().channel(channel).frequency(true,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.REDSTONE));
+        spawn.edit("trigger",2,"");
+        spawn.edit("channel",channel,"");
+        var signal=first.modules().add("combat_event").signalRules().rows().getFirst();
+        signal.edit("eventKind",3);
+        signal.edit("eventChannel",channel+1);
+        player.setPos(center);
+        NbtIo.writeCompressed(second.tag,file);
+        h.assertTrue(BlueprintSpawns.select(player,first,spawn,fileName),"Could not select stage blueprint");
+        h.assertTrue(ArenaRespawns.record(player,first,arena),"Arena capture failed");
+        arena.edit("arenaRespawnAnnouncement",0,"&aReturned "+firstName);
+        arena.edit("arenaDefeatAnnouncement",0,"&cDefeated "+firstName);
+        first.tryActivate(player);
+        h.assertTrue(first.health().state()==HeartState.ALIVE,"Could not activate first stage");
+        if (restartManifest!=null) {
+            prepareArenaRestart(h,restartManifest,first,second,minion,spawn,fileName,minionFileName,player);
+            return;
+        }
+        var listener=new AnnouncementListener(level);
+        var field=net.minecraft.server.players.PlayerList.class.getDeclaredField("players");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked") var players=(List<net.minecraft.server.level.ServerPlayer>)field.get(server.getPlayerList());
+        players.add(listener);
+        var original=first.creatureId();
+        h.assertTrue(first.modules().damageBoxes.bodyDamage(first,player,first.getBlockPos(),5,false,false),"Player body hit failed");
+        long deadline=arenaRecord(h,original).getLong("BattleDeadline");
+        h.assertTrue(deadline==level.getGameTime()+(timeout?220:6000),"First player hit did not start the configured timer");
+        h.assertTrue(first.forceDeath(),"First stage did not die");
+        var storage=server.overworld().getDataStorage();
+        storage.set("sablelife_arena_respawns",ArenaRespawns.load(ArenaRespawns.get(server).save(new CompoundTag(),level.registryAccess()),level.registryAccess()));
+        storage.set("sablelife_blueprint_spawns",BlueprintSpawns.load(BlueprintSpawns.get(server).save(new CompoundTag(),level.registryAccess()),level.registryAccess()));
+        h.runAfterDelay(140,()->{
+            h.assertTrue(listener.messages.stream().noneMatch(s->s.contains(firstName)),"Arena broadcast before the second stage ended");
+            h.assertTrue(aliveNamed(level,firstName).isEmpty(),"First stage respawned over a live second stage");
+            var alive=aliveNamed(level,secondName);
+            var record=arenaRecord(h,original);
+            h.assertTrue(record.getLong("BattleDeadline")==deadline,"Second stage did not inherit the saved deadline");
+            if(stageDelay>0){
+                h.assertTrue(alive.isEmpty()&&record.hasUUID("StageJob"),"Expected the next stage to remain queued");
+                return;
+            }
+            h.assertTrue(alive.size()==1 && ArenaRespawns.inheritedBoundary(alive.getFirst())!=null,"Arena did not register the second stage boundary");
+            var secondCore=alive.getFirst();
+            var summon=secondCore.modules().all().stream().filter(m->m.type().equals("blueprint_spawn")&&m.value("spawnArenaRole")==2).findFirst().orElseThrow();
+            var minions=aliveNamed(level,minionName);
+            h.assertTrue(minions.size()==1,"Expected one live summon, got "+minions.size()+": "
+                    +BlueprintSpawns.snapshot(secondCore,summon));
+            if (nested) {
+                var nextStage = secondCore.modules().all().stream()
+                        .filter(m->m.type().equals("blueprint_spawn")&&m.value("spawnArenaRole")==1).findFirst().orElseThrow();
+                var minionCore = minions.getFirst();
+                var recursive = minionCore.modules().all().stream().filter(m->m.type().equals("blueprint_spawn")).findFirst().orElseThrow();
+                h.assertTrue(recursive.value("spawnLimit")==64,"Nested module settings were lost at placement");
+                h.assertTrue(BlueprintSpawns.snapshot(secondCore,nextStage).getString("Name").isEmpty(),"Second boss phase inherited a third-stage job");
+                h.assertTrue(BlueprintSpawns.snapshot(minionCore,recursive).getString("Name").isEmpty(),"Minion inherited an automatically executable self-reference");
+                h.assertTrue(record.getInt("SummonsUsed")==1&&record.getList("Summons",11).size()==1,"Arena tracked extra nested spawns");
+            }
+            if(!timeout)h.assertTrue(alive.getFirst().forceDeath(),"Second stage did not die");
+        });
+        h.runAfterDelay(timeout?295:280,()->{
+            try{
+                var rebuilt=aliveNamed(level,firstName);
+                h.assertTrue(rebuilt.size()==1&&!rebuilt.getFirst().creatureId().equals(original),"First stage failed to respawn once");
+                h.assertTrue(aliveNamed(level,secondName).isEmpty(),"Second stage survived the arena reset");
+                h.assertTrue(aliveNamed(level,minionName).isEmpty(),"Second-stage summon survived the arena reset");
+                if (nested) {
+                    var reset = arenaRecord(h,rebuilt.getFirst().creatureId());
+                    h.assertTrue(!reset.hasUUID("Stage")&&!reset.hasUUID("StageJob")&&reset.getInt("SummonsUsed")==0
+                            &&reset.getList("Summons",11).isEmpty(),"Arena reset left stale stage or summon records");
+                }
+                var messages=listener.messages.stream().filter(s->s.contains(firstName)).toList();
+                var expected=timeout?List.of("Returned "+firstName):List.of("Defeated "+firstName,"Returned "+firstName);
+                h.assertTrue(messages.equals(expected),"Wrong arena announcements: "+messages);
+                var restored=rebuilt.getFirst().modules().all().stream().filter(m->m.type().equals("blueprint_spawn")).findFirst().orElseThrow();
+                h.assertTrue(BlueprintSpawns.snapshot(rebuilt.getFirst(),restored).getString("Name").equals(fileName),"Rebuilt first stage lost its approved blueprint");
+                ArenaRespawns.clear(player,rebuilt.getFirst(),rebuilt.getFirst().modules().all().stream().filter(m->m.type().equals("arena")).findFirst().orElseThrow());
+                h.succeed();
+            }finally{
+                players.remove(listener);
+                listener.channel.finishAndReleaseAll();
+                try{java.nio.file.Files.deleteIfExists(file);java.nio.file.Files.deleteIfExists(minionFile);}catch(java.io.IOException ex){throw new java.io.UncheckedIOException(ex);}
+            }
+        });
+    }
+    private static List<HeartBlockEntity> aliveNamed(net.minecraft.server.level.ServerLevel level,String name){
+        return LoadedCoreIndex.all(level).stream().filter(core->core.creatureName().equals(name)&&core.health().state()==HeartState.ALIVE).toList();
+    }
+
+    private static void prepareArenaRestart(GameTestHelper h, java.nio.file.Path manifest, HeartBlockEntity first,
+                                            Template second, Template minion, VirtualModule spawn, String stageFile,
+                                            String minionFile, net.minecraft.server.level.ServerPlayer player) {
+        var level = h.getLevel();
+        var area = h.absolutePos(new BlockPos(4,25,12));
+        for (int x=-1; x<=1; x++) for (int z=-1; z<=1; z++)
+            level.setChunkForced((area.getX()>>4)+x,(area.getZ()>>4)+z,true);
+        h.assertTrue(first.modules().damageBoxes.bodyDamage(first,player,first.getBlockPos(),5,false,false),"Could not start arena battle");
+        h.assertTrue(first.forceDeath(),"Could not queue the second stage by boss death");
+        h.runAfterDelay(12,()->{
+            var entry = arenaRecord(h,first.creatureId());
+            h.assertTrue(entry.hasUUID("StageJob")&&entry.getUUID("StageJob").equals(spawn.id())
+                    &&BlueprintSpawns.snapshot(first,spawn).getString("Phase").equals("queued"),"Second stage was not queued before shutdown");
+            var state = new CompoundTag();
+            state.putUUID("First",first.creatureId());
+            state.putUUID("StageJob",spawn.id());
+            state.putLong("BattleDeadline",entry.getLong("BattleDeadline"));
+            state.putString("FirstName",first.creatureName());
+            state.putString("SecondName",second.core.creatureName());
+            state.putString("MinionName",minion.core.creatureName());
+            state.putString("StageFile",stageFile);
+            state.putString("MinionFile",minionFile);
+            state.putLong("Area",area.asLong());
+            try { NbtIo.writeCompressed(state,manifest); }
+            catch (java.io.IOException ex) { throw new java.io.UncheckedIOException(ex); }
+            h.succeed();
+        });
+    }
+
+    static void verifyArenaRestart(GameTestHelper h, java.nio.file.Path manifest)throws Exception {
+        var state = NbtIo.readCompressed(manifest,NbtAccounter.unlimitedHeap());
+        var level = h.getLevel();
+        var server = level.getServer();
+        var first = state.getUUID("First");
+        var entry = arenaRecord(h,first);
+        var stageJobs = BlueprintSpawns.get(server).save(new CompoundTag(),level.registryAccess()).getList("Entries",10);
+        h.assertTrue(entry.hasUUID("StageJob")&&entry.getUUID("StageJob").equals(state.getUUID("StageJob"))
+                &&stageJobs.stream().map(tag->(CompoundTag)tag).anyMatch(tag->tag.getUUID("Module").equals(state.getUUID("StageJob"))
+                        &&tag.getString("Phase").equals("queued")),"Queued stage was not restored after restart");
+        h.assertTrue(entry.getLong("BattleDeadline")==state.getLong("BattleDeadline"),"Arena deadline changed on restart");
+        h.runAfterDelay(255,()->{
+            var stages = aliveNamed(level,state.getString("SecondName"));
+            var minions = aliveNamed(level,state.getString("MinionName"));
+            h.assertTrue(aliveNamed(level,state.getString("FirstName")).isEmpty(),"First-stage boss respawned during the second stage");
+            h.assertTrue(stages.size()==1&&minions.size()==1,"Restart did not produce exactly one second stage and one minion");
+            h.assertTrue(ArenaRespawns.inheritedBoundary(stages.getFirst())!=null,"Restart lost arena boundary");
+            h.assertTrue(stages.getFirst().forceDeath(),"Could not defeat the restored second stage");
+        });
+        h.runAfterDelay(440,()->{
+            var rebuilt = aliveNamed(level,state.getString("FirstName"));
+            h.assertTrue(rebuilt.size()==1&&!rebuilt.getFirst().creatureId().equals(first)
+                    &&aliveNamed(level,state.getString("SecondName")).isEmpty()&&aliveNamed(level,state.getString("MinionName")).isEmpty(),
+                    "Post-restart arena did not clean the full wave and respawn exactly one boss");
+            var boss = rebuilt.getFirst();
+            var arena = boss.modules().all().stream().filter(m->m.type().equals("arena")).findFirst().orElseThrow();
+            var spawn = boss.modules().all().stream().filter(m->m.type().equals("blueprint_spawn")).findFirst().orElseThrow();
+            h.assertTrue(BlueprintSpawns.snapshot(boss,spawn).getString("Name").equals(state.getString("StageFile")),
+                    "Post-restart boss lost stage blueprint selection");
+            var player = admin(h);
+            player.setPos(ModuleArena.corePosition(boss));
+            ArenaRespawns.clear(player,boss,arena);
+            var area = BlockPos.of(state.getLong("Area"));
+            for (int x=-1; x<=1; x++) for (int z=-1; z<=1; z++)
+                level.setChunkForced((area.getX()>>4)+x,(area.getZ()>>4)+z,false);
+            h.succeed();
+        });
+    }
+
+    private static CompoundTag arenaRecord(GameTestHelper h, UUID owner) {
+        return ArenaRespawns.get(h.getLevel().getServer()).save(new CompoundTag(),h.getLevel().registryAccess())
+                .getList("Entries",10).stream().map(tag->(CompoundTag)tag)
+                .filter(tag->tag.getUUID("Creature").equals(owner)).findFirst().orElseThrow();
+    }
+
+    static void arenaRejectsOutsideAndSeventeenthSummonAndResetsQuota(GameTestHelper h) {
+        var level = h.getLevel();
+        var boss = core(h);
+        var minion = template(h,1,8);
+        var player = admin(h);
+        var center = ModuleArena.corePosition(boss);
+        var outsidePoint = center.add(50,0,0);
+        var outsideChunk = new ChunkPos(BlockPos.containing(outsidePoint));
+        level.setChunkForced(outsideChunk.x,outsideChunk.z,true);
+        player.setPos(center);
+        var arena = boss.modules().add("arena");
+        arena.arenaCenter(center,level.dimension().location().toString());
+        arena.edit("arenaRespawnEnabled",1,"");
+        arena.edit("arenaRespawnDelay",100,"");
+        h.assertTrue(ArenaRespawns.record(player,boss,arena),"Could not capture boss blueprint");
+
+        var outside = module(h,boss,minion.tag);
+        outside.arenaCenter(center.add(49,0,0),level.dimension().location().toString());
+        outside.edit("spawnArenaRole",2,"");
+        var spawnModules = new ArrayList<VirtualModule>();
+        for (int i=0; i<17; i++) {
+            var position = center.add(5+(i%5)*4,-12,5+(i/5)*4);
+            var floor = BlockPos.containing(position).below();
+            for (int x=-1; x<=2; x++) for (int z=-1; z<=1; z++)
+                level.setBlockAndUpdate(floor.offset(x,0,z),Blocks.STONE.defaultBlockState());
+            var spawn = module(h,boss,minion.tag);
+            spawn.arenaCenter(position,level.dimension().location().toString());
+            spawn.edit("spawnArenaRole",2,"");
+            spawnModules.add(spawn);
+        }
+        boss.tryActivate(player);
+        h.assertTrue(boss.health().state()==HeartState.ALIVE,"Boss did not activate");
+        var owner = boss.creatureId();
+        var minionName = minion.core.creatureName();
+        var spawnedIds = new ArrayList<UUID>();
+        h.runAfterDelay(55,()->{
+            var record = arenaRecord(h,owner);
+            var minions = aliveNamed(level,minionName);
+            h.assertTrue(minions.size()==16&&record.getInt("SummonsUsed")==16&&record.getList("Summons",11).size()==16,
+                    "Expected sixteen active and tracked minions, got "+minions.size()+" / "+record.getInt("SummonsUsed"));
+            h.assertTrue(BlueprintSpawns.snapshot(boss,outside).getString("Error").equals("arena"),"Out-of-bounds spawn was not rejected");
+            h.assertTrue(spawnModules.stream().filter(m->BlueprintSpawns.snapshot(boss,m).getString("Error").equals("arena")).count()==1,
+                    "Expected exactly one in-bounds request to be rejected");
+            minions.forEach(c->spawnedIds.add(c.creatureId()));
+            h.assertTrue(ModuleArena.returnToCenter(minions.getFirst(),outsidePoint),"Could not move summon outside the arena");
+        });
+        h.runAfterDelay(95,()->{
+            var moved = LoadedCoreIndex.find(level,spawnedIds.getFirst());
+            var distance = moved==null ? -1 : ModuleArena.horizontalDistance(ModuleArena.corePosition(moved),center);
+            h.assertTrue(moved!=null&&distance<2,"Out-of-bounds summon did not return to the center (distance "+distance+")");
+            h.assertTrue(boss.forceDeath(),"Could not kill the first-stage boss");
+        });
+        h.runAfterDelay(290,()->{
+            var rebuilt = aliveNamed(level,boss.creatureName());
+            h.assertTrue(rebuilt.size()==1&&!rebuilt.getFirst().creatureId().equals(owner),"Arena did not respawn exactly one boss");
+            h.assertTrue(aliveNamed(level,minionName).isEmpty(),"Arena reset left active summons");
+            var record = arenaRecord(h,rebuilt.getFirst().creatureId());
+            h.assertTrue(record.getInt("SummonsUsed")==0&&record.getList("Summons",11).isEmpty(),"Arena reset did not clear the summon quota and records");
+            for (var id:spawnedIds)
+                h.assertTrue(!BodyOwnership.get(level).hasOwned(id),"Arena reset left summon body ownership");
+            var restoredArena = rebuilt.getFirst().modules().all().stream().filter(m->m.type().equals("arena")).findFirst().orElseThrow();
+            ArenaRespawns.clear(player,rebuilt.getFirst(),restoredArena);
+            level.setChunkForced(outsideChunk.x,outsideChunk.z,false);
+            h.succeed();
+        });
+    }
+
+    @GameTest(template="combat",batch="arena_battle_timeout",timeoutTicks=340)
+    public static void ArenaBattleTimeoutResetsWithoutWaitingForRespawnDelay(GameTestHelper h) {
+        checkArenaBattleTimeout(h, false);
+    }
+
+    @GameTest(template="combat",batch="arena_battle_chat",timeoutTicks=340)
+    public static void ArenaBattleChatRespectsRangeAndSurvivesRespawn(GameTestHelper h) {
+        checkArenaBattleTimeout(h, true);
+    }
+
+    private static void checkArenaBattleTimeout(GameTestHelper h, boolean chat) {
+        var level=h.getLevel();
+        var first=core(h);
+        first.configure(100,0);
+        var player=admin(h);
+        var center=ModuleArena.corePosition(first);
+        player.setPos(center);
+        var arena=first.modules().add("arena");
+        arena.arenaCenter(center,level.dimension().location().toString());
+        arena.edit("arenaRespawnEnabled",1,"");
+        arena.edit("arenaRespawnDelay",1200,"");
+        h.assertTrue(arena.value("arenaRespawnBattleTimer")==0,"Existing arena settings should opt in to the timer");
+        h.assertTrue(ArenaRespawns.record(player,first,arena),"Arena capture failed");
+        arena.edit("arenaRespawnBattleTimer",1,"");
+        arena.edit("arenaRespawnBattleLimit",220,"");
+        h.assertTrue(arena.value(ArenaBattleTitle.ENABLED_KEY)==0,"Old arena settings unexpectedly enabled titles");
+        arena.edit(ArenaBattleTitle.ENABLED_KEY,1,"");
+        var oldSettings=arena.save();
+        oldSettings.getCompound("Settings").remove(ArenaBattleTitle.DISPLAY_KEY);
+        h.assertTrue(VirtualModule.load(oldSettings).value(ArenaBattleTitle.DISPLAY_KEY)==0,
+                "Older arena records must default to Title");
+        if(chat){
+            var menu=new HeartDashboardMenu(1,player.getInventory(),first);
+            var packet=new ModuleNetworking.Action(1,first.modules().revision(),arena.id(),"edit",
+                    ArenaBattleTitle.DISPLAY_KEY,ArenaBattleTitle.CHAT_DISPLAY,"");
+            var buffer=new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(),level.registryAccess());
+            try{
+                ModuleNetworking.Action.CODEC.encode(buffer,packet);
+                var read=ModuleNetworking.Action.CODEC.decode(buffer);
+                var noOp=TestActors.creative(level);
+                noOp.setPos(player.position());
+                var restricted=new HeartDashboardMenu(2,noOp.getInventory(),first);
+                h.assertTrue(!restricted.action(noOp,read.revision(),read.module(),read.operation(),read.key(),read.value(),read.text()),
+                        "Non-operator changed the reminder display");
+                h.assertTrue(menu.action(player,read.revision(),read.module(),read.operation(),read.key(),read.value(),read.text()),
+                        "Dashboard rejected Chat");
+            }finally{buffer.release();}
+            h.assertTrue(VirtualModule.load(arena.save()).value(ArenaBattleTitle.DISPLAY_KEY)==ArenaBattleTitle.CHAT_DISPLAY,
+                    "Chat was lost during module serialization");
+        }
+        arena.edit("warningRange",4,"");
+        String intro="&c&lFight! {time}";
+        arena.edit(ArenaBattleTitle.START.key(),0,intro);
+        arena.edit(ArenaBattleTitle.TEN_SECONDS.key(),0,"&e{time} left");
+        arena.edit(ArenaBattleTitle.ONE_MINUTE.key(),0,"");
+        h.assertTrue(ArenaBattleTitle.due(12000,12001)==ArenaBattleTitle.TEN_MINUTES
+                &&ArenaBattleTitle.due(6000,6001)==ArenaBattleTitle.FIVE_MINUTES
+                &&ArenaBattleTitle.due(1200,1201)==ArenaBattleTitle.ONE_MINUTE
+                &&ArenaBattleTitle.due(200,201)==ArenaBattleTitle.TEN_SECONDS
+                &&ArenaBattleTitle.due(6000,6000)==null,"Countdown title milestones are incorrect");
+        first.tryActivate(player);
+        var owner=first.creatureId();
+        h.assertTrue(first.damage(5),"Unattributed damage did not apply");
+        h.assertTrue(!arenaRecord(h,owner).contains("BattleDeadline"),"Damage with no player attribution started the battle");
+        var nearby=new AnnouncementListener(level);
+        var outside=new AnnouncementListener(level);
+        nearby.setPos(center.x,center.y,center.z);
+        outside.setPos(center.x+8,center.y,center.z);
+        level.addNewPlayer(nearby);
+        level.addNewPlayer(outside);
+        var reminders=chat?nearby.styledMessages:nearby.titles;
+        var otherFormat=chat?nearby.titles:nearby.styledMessages;
+        try{
+            h.assertTrue(first.modules().damageBoxes.bodyDamage(first,player,first.getBlockPos(),5,false,false),"Player damage did not apply");
+            h.assertTrue(reminders.size()==1&&otherFormat.isEmpty()&&outside.titles.isEmpty()&&outside.messages.isEmpty(),
+                    "Start reminder used the wrong display or reached a player outside range");
+            var title=reminders.getFirst();
+            h.assertTrue(title.getString().equals("Fight! 11 s"),"Start title did not replace the time placeholder: "+title.getString());
+            var firstSpan=title.getSiblings().getFirst().getStyle();
+            h.assertTrue(firstSpan.isBold()&&firstSpan.getColor().equals(net.minecraft.network.chat.TextColor.fromLegacyFormat(net.minecraft.ChatFormatting.RED)),
+                    "Start title lost its formatting");
+        }catch(RuntimeException|Error failure){
+            nearby.discard();
+            nearby.channel.finishAndReleaseAll();
+            throw failure;
+        }finally{
+            outside.discard();
+            outside.channel.finishAndReleaseAll();
+        }
+        long deadline=arenaRecord(h,owner).getLong("BattleDeadline");
+        h.assertTrue(deadline==level.getGameTime()+220,"Player damage did not start the configured timer");
+        h.runAfterDelay(25,()->{
+            try{
+                h.assertTrue(reminders.size()==2&&otherFormat.isEmpty()&&reminders.getLast().getString().equals("10 s left"),
+                        "The ten-second threshold did not send exactly one customized reminder");
+            }finally{
+                nearby.discard();
+                nearby.channel.finishAndReleaseAll();
+            }
+        });
+        h.runAfterDelay(30,()->{
+            h.assertTrue(first.modules().damageBoxes.bodyDamage(first,player,first.getBlockPos(),5,false,false),"Second player hit did not apply");
+            h.assertTrue(arenaRecord(h,owner).getLong("BattleDeadline")==deadline,"Second hit extended the timer");
+        });
+        String name=first.creatureName();
+        h.runAfterDelay(285,()->{
+            var alive=aliveNamed(level,name);
+            h.assertTrue(alive.size()==1&&!alive.getFirst().creatureId().equals(owner),"Timeout did not restore the first form before the normal respawn delay");
+            var restored=alive.getFirst();
+            var restoredArena=restored.modules().all().stream().filter(m->m.type().equals("arena")).findFirst().orElseThrow();
+            h.assertTrue(restoredArena.value("arenaRespawnBattleTimer")==1&&restoredArena.value("arenaRespawnBattleLimit")==220,
+                    "Respawn lost the current timer configuration");
+            h.assertTrue(restoredArena.value(ArenaBattleTitle.ENABLED_KEY)==1
+                    &&restoredArena.value(ArenaBattleTitle.DISPLAY_KEY)==(chat?ArenaBattleTitle.CHAT_DISPLAY:0)
+                    &&restoredArena.text(ArenaBattleTitle.START.key()).equals(intro)
+                    &&restoredArena.text(ArenaBattleTitle.TEN_SECONDS.key()).equals("&e{time} left")
+                    &&restoredArena.hasText(ArenaBattleTitle.ONE_MINUTE.key())
+                    &&restoredArena.text(ArenaBattleTitle.ONE_MINUTE.key()).isEmpty(),
+                    "Respawn lost a custom or muted title saved after template capture");
+            h.assertTrue(!arenaRecord(h,restored.creatureId()).contains("BattleDeadline"),"A new battle started without a hit");
+            ArenaRespawns.clear(player,restored,restoredArena);
+            h.succeed();
+        });
+    }
+
+    @GameTest(template="combat",batch="arena_announcement_edit")
+    public static void ArenaAnnouncementUsesDashboardPermissionsAndPacketLimit(GameTestHelper h){
+        var core=core(h);
+        var arena=core.modules().add("arena");
+        var player=admin(h);
+        player.setPos(ModuleArena.corePosition(core));
+        var menu=new HeartDashboardMenu(1,player.getInventory(),core);
+        h.assertTrue(!VirtualModule.load(arena.save()).hasText(ArenaBattleTitle.START.key()),
+                "A new arena's missing title became an explicit blank after reload");
+        String message="界".repeat(ModuleFields.ARENA_ANNOUNCEMENT_LENGTH);
+        var buffer=new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(),h.getLevel().registryAccess());
+        try{
+          for(String key:List.of("arenaDefeatAnnouncement",ArenaBattleTitle.START.key())){
+            buffer.clear();
+            var valid=new ModuleNetworking.Action(1,core.modules().revision(),arena.id(),"edit",key,0,message);
+            ModuleNetworking.Action.CODEC.encode(buffer,valid);
+            var read=ModuleNetworking.Action.CODEC.decode(buffer);
+            h.assertTrue(read.equals(valid),"Announcement text changed during packet roundtrip");
+            h.assertTrue(menu.action(player,read.revision(),read.module(),read.operation(),read.key(),read.value(),read.text()),"Dashboard rejected valid message");
+            h.assertTrue(VirtualModule.load(arena.save()).text(key).equals(message),"Announcement did not survive save/reload");
+            try{
+                ModuleNetworking.Action.CODEC.encode(buffer,new ModuleNetworking.Action(1,read.revision(),arena.id(),"edit",key,0,message+"a"));
+                h.fail("Packet encoder accepted an oversized announcement");
+            }catch(io.netty.handler.codec.EncoderException expected){}
+            var noOp=TestActors.creative(h.getLevel());
+            noOp.setPos(player.position());
+            var restricted=new HeartDashboardMenu(2,noOp.getInventory(),core);
+            h.assertTrue(!restricted.action(noOp,core.modules().revision(),arena.id(),"edit",key,0,"unapproved"),"Non-operator edited a broadcast");
+            h.assertTrue(menu.action(player,core.modules().revision(),arena.id(),"edit",key,0,""),"Operator could not clear announcement");
+            var restored=VirtualModule.load(arena.save());
+            h.assertTrue(restored.hasText(key)&&restored.text(key).isEmpty(),"Explicit blank did not survive save/reload");
+          }
+            h.succeed();
+        }finally{buffer.release();}
+    }
+    @GameTest(template = "combat", batch = "survival_refuel_blueprint")
+    public static void BlueprintCopiesAutoRefuelSettingButNotStoredFuel(GameTestHelper h) {
+        var level = h.getLevel();
+        var player = admin(h);
+        var source = template(h, 4, 0, core -> {
+            player.setPos(ModuleArena.corePosition(core));
+            var menu = new SurvivalTopUpMenu(1, player.getInventory(), core);
+            menu.getSlot(2).set(new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.COPPER_INGOT, 3));
+            h.assertTrue(menu.clickMenuButton(player, SurvivalTopUpMenu.ENABLE_AUTO), "Could not enable automatic refuel");
+        });
+        var build = PhotomancyRespawnBridge.createSpawn(source.tag, new CompoundTag(),
+                h.absoluteVec(new Vec3(6, 40, 16)), new org.joml.Quaterniond());
+        h.assertTrue(build.step(level).equals("DONE"), "Native placement failed");
+        var copy = LoadedCoreIndex.all(level).stream()
+                .filter(core -> core != source.core && core.creatureName().equals(source.core.creatureName()))
+                .findFirst().orElseThrow();
+        var menu = new SurvivalTopUpMenu(1, player.getInventory(), copy);
+        h.assertTrue(copy.isSurvivalCore() && menu.snapshot().getBoolean("Automatic")
+                && menu.getSlot(2).getItem().isEmpty() && copy.survivalTokenBalance() == 0,
+                "Blueprint did not preserve Auto Refuel or duplicated fuel");
+        h.assertTrue(new SurvivalTopUpMenu(1, player.getInventory(), source.core).getSlot(2).getItem().getCount() == 3,
+                "Export removed fuel from the original core");
+        h.succeed();
+    }
+
+    @GameTest(template = "combat", batch = "spawn_world_destination")
+    public static void BlueprintPlacementMovesTheSavedWorldDestinationWithTheCore(GameTestHelper h) {
+        var level = h.getLevel();
+        var offset = new Vec3(0, 2, 5);
+        var source = template(h, 1, 0, core -> {
+            var movement = core.modules().add("linear_movement");
+            movement.edit("moveAim", 2, "");
+            movement.arenaCenter(SableBodyProbe.toWorld(level, core.getBlockPos().getCenter()).add(offset),
+                    level.dimension().location().toString());
+        });
+        var rotation = new org.joml.Quaterniond().rotationY(Math.PI / 2);
+        var build = PhotomancyRespawnBridge.createSpawn(source.tag, new CompoundTag(),
+                h.absoluteVec(new Vec3(6, 40, 16)), rotation);
+        h.assertTrue(build.step(level).equals("DONE"), "Native placement failed");
+        var copy = LoadedCoreIndex.all(level).stream()
+                .filter(core -> core != source.core && core.creatureName().equals(source.core.creatureName()))
+                .findFirst().orElseThrow();
+        var expected = dev.sablelife.attack.ContactBox.rotate(rotation, offset);
+        var destination = SableBodyProbe.toWorld(level, copy.getBlockPos().getCenter()).add(expected);
+        h.succeedWhen(() -> {
+            var movement = copy.modules().all().getFirst();
+            h.assertTrue(movement.arenaCenter() != null && movement.arenaCenter().distanceTo(destination) < 0.12,
+                    "Placed blueprint lost or misaligned the destination: " + movement.arenaCenter() + " / " + destination);
+        });
+    }
+
+    @GameTest(template = "combat", batch = "spawn_arena_requires_new_mark", timeoutTicks = 60)
+    public static void SpawnedBlueprintKeepsArenaSettingsButRequiresANewWorldMark(GameTestHelper h) {
+        var level = h.getLevel();
+        var actor = admin(h);
+        var generator = core(h);
+        var offset = new Vec3(0, 2, 5);
+        var source = template(h, 1, 8, heart -> {
+            var arena = heart.modules().add("arena");
+            arena.arenaCenter(ModuleArena.corePosition(heart).add(0, 0, 4), level.dimension().location().toString());
+            arena.edit("arenaRadius", 72, "");
+            arena.edit("arenaRespawnEnabled", 1, "");
+            h.assertTrue(ArenaRespawns.record(actor, heart, arena), "Could not record the original arena");
+
+            var movement = heart.modules().add("linear_movement");
+            movement.edit("moveAim", 2, "");
+            movement.edit("trigger", 2, "");
+            movement.arenaCenter(ModuleArena.corePosition(heart).add(offset), level.dimension().location().toString());
+        });
+        var originalArena = source.core.modules().all().getFirst();
+        try {
+            var arenaTag = findModule(source.tag, "arena");
+            h.assertTrue(arenaTag != null && !arenaTag.contains("sablelife:blueprint_arena_offset")
+                    && !arenaTag.contains("ArenaCenter"), "New blueprint exported the original arena mark");
+            var oldOffset = new CompoundTag();
+            oldOffset.putDouble("Z", 4);
+            arenaTag.put("sablelife:blueprint_arena_offset", oldOffset);
+
+            var spawn = module(h, generator, source.tag);
+            spawn.edit("spawnActivate", 1, "");
+            generator.tryActivate(actor);
+            BlueprintSpawns.tickCore(generator);
+            BlueprintSpawns.get(level.getServer()).advance(level.getServer());
+
+            var copy = LoadedCoreIndex.all(level).stream()
+                    .filter(heart -> heart != source.core && heart.creatureName().equals(source.core.creatureName()))
+                    .findFirst().orElseThrow(() -> new GameTestAssertException("Could not find the generated core"));
+            var expectedWaypoint = ModuleArena.corePosition(copy).add(offset);
+            h.assertTrue(copy.health().state() == HeartState.DORMANT, "Core activated before its fixed waypoint was restored");
+            var savedWhileWaiting = copy.saveWithoutMetadata(level.registryAccess());
+            h.assertTrue(savedWhileWaiting.contains("PendingBlueprintActivation"), "Pending activation was not saved");
+            copy.loadWithComponents(savedWhileWaiting, level.registryAccess());
+            h.assertTrue(copy.health().state() == HeartState.DORMANT, "Reload bypassed pending activation");
+            var copiedArena = copy.modules().all().getFirst();
+            var movement = copy.modules().all().get(1);
+            h.assertTrue(copiedArena.arenaCenter() == null && HeartModules.status(copiedArena, copy).equals("unmarked"),
+                    "A legacy blueprint restored the arena's world mark");
+            h.assertTrue(copiedArena.value("arenaRadius") == 72 && copiedArena.value("arenaRespawnEnabled") == 1,
+                    "Arena settings were lost while clearing the world mark");
+            h.assertTrue(!ArenaRespawns.snapshot(copy, copiedArena.id()).getBoolean("Recorded"),
+                    "Generated blueprint inherited the original arena record");
+
+            h.succeedWhen(() -> {
+                h.assertTrue(copy.health().state() == HeartState.ALIVE, "Generated core did not activate");
+                h.assertTrue(!copy.saveWithoutMetadata(level.registryAccess()).contains("PendingBlueprintActivation"),
+                        "Completed activation retained a pending request");
+                h.assertTrue(movement.arenaCenter() != null && movement.arenaCenter().distanceTo(expectedWaypoint) < .25,
+                        "Independent linear waypoint was lost or misaligned");
+                h.assertTrue(copiedArena.arenaCenter() == null && HeartModules.status(copiedArena, copy).equals("unmarked"),
+                        "Activating the generated core restored the old arena mark");
+            });
+        } finally {
+            ArenaRespawns.clear(actor, source.core, originalArena);
+        }
+    }
+
+    private static CompoundTag findModule(Tag tag, String type) {
+        if (tag instanceof CompoundTag compound) {
+            if (compound.getString("Type").equals(type) && compound.hasUUID("Id")) return compound;
+            for (String key : compound.getAllKeys()) {
+                var found = findModule(compound.get(key), type);
+                if (found != null) return found;
+            }
+        } else if (tag instanceof ListTag list) {
+            for (var entry : list) {
+                var found = findModule(entry, type);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
     @GameTest(template="combat",batch="spawn_metadata")
     public static void CountsOrdinarySingleMultipleAndRedstoneCoresBeforeGeneration(GameTestHelper h){for(int kind=0;kind<4;kind++){var source=template(h,kind,kind*5);var info=SpawnTemplateBridge.inspect(source.tag);h.assertTrue(info.life()==(kind==0||kind==3?0:kind==2?2:1)&&info.redstone()==(kind==3?1:0),"Wrong blueprint core counts for kind "+kind);h.assertTrue(info.canActivate()==(kind==1),"Invalid auto activation policy for kind "+kind);}h.succeed();}
     @GameTest(template="combat",batch="spawn_ordinary")
@@ -452,7 +1346,7 @@ public final class BlueprintSpawnGameTests {
         String name = source.core.creatureName();
         UUID old = source.core.creatureId();
         var m = module(h, c, source.tag);
-        m.edit("spawnActivate", 1, "");
+        h.assertTrue(m.value("spawnActivate") == 1, "New blueprint modules must default to activation On");
         c.tryActivate(admin(h));
         h.succeedWhen(() -> {
             var alive = LoadedCoreIndex.all(h.getLevel()).stream()
@@ -465,8 +1359,159 @@ public final class BlueprintSpawnGameTests {
                     "Blueprint placement lost group membership or module order");
         });
     }
+
+    @GameTest(template = "combat", batch = "spawn_move_target_legacy", timeoutTicks = 50)
+    public static void LegacyBlueprintMoveKeepsIndependentGunAimAfterPlacement(GameTestHelper h) {
+        spawnMoveGun(h, false);
+    }
+
+    @GameTest(template = "combat", batch = "spawn_move_target_on", timeoutTicks = 50)
+    public static void BlueprintMoveWithInheritanceKeepsItsGunAimAfterPlacement(GameTestHelper h) {
+        spawnMoveGun(h, true);
+    }
+
+    private static void spawnMoveGun(GameTestHelper h, boolean inherit) {
+        var level = h.getLevel();
+        var generator = core(h);
+        var source = template(h, 1, 8, heart -> {
+            var gun = heart.modules().add("gun");
+            gun.anchors(List.of(ModuleAnchor.create(heart, heart.getBlockPos(), Direction.UP)));
+            gun.edit("shotAim", 1, "");
+            gun.edit("target", 1, "");
+            gun.edit("targetRange", 12, "");
+            gun.edit("interval", 200, "");
+            var table = heart.modules().add("move_set");
+            h.assertTrue(table.moveSet().edit("add", 0, "", heart.modules()), "Could not add source move");
+            h.assertTrue(table.moveSet().edit("action_add", 0, "0|" + gun.id(), heart.modules()), "Could not bind source gun");
+            var rules = table.moveSet().get(0).config();
+            h.assertTrue(rules.edit("dispatchFront", 3, "") && rules.edit("dispatchCone", 60, "")
+                    && rules.edit("target", 1, "") && rules.edit("inheritMoveTarget", 1, ""), "Could not set move target rules");
+        });
+        if (!inherit) h.assertTrue(removeMoveTargetField(source.tag) == 1, "Legacy blueprint fixture did not remove one move setting");
+
+        var spawn = module(h, generator, source.tag);
+        spawn.edit("spawnActivate", 1, "");
+        generator.tryActivate(admin(h));
+        BlueprintSpawns.tickCore(generator);
+        BlueprintSpawns.get(level.getServer()).advance(level.getServer());
+        h.assertTrue(BlueprintSpawns.snapshot(generator, spawn).getInt("Count") == 1, "Native placement did not complete");
+
+        var copy = LoadedCoreIndex.all(level).stream().filter(heart -> !heart.creatureId().equals(source.core.creatureId())
+                && heart.creatureName().equals(source.core.creatureName()) && heart.health().state() == HeartState.ALIVE)
+                .findFirst().orElseThrow(() -> new GameTestAssertException("Could not find the spawned life"));
+        var gun = copy.modules().all().getFirst();
+        var move = copy.modules().all().get(1).moveSet().get(0);
+        var oldGun = source.core.modules().all().getFirst();
+        var oldMove = source.core.modules().all().get(1).moveSet().get(0);
+        h.assertTrue(gun.type().equals("gun") && !gun.id().equals(oldGun.id()) && !move.config().id().equals(oldMove.config().id())
+                && move.actions().size() == 1 && move.actions().getFirst().module().equals(gun.id()), "Move or action UUID was not remapped");
+        h.assertTrue(HeartModules.status(gun, copy).equals("valid") && !gun.anchors().getFirst().bodyId().equals(oldGun.anchors().getFirst().bodyId())
+                && gun.value("trigger") == 4 && move.config().value("inheritMoveTarget") == (inherit ? 1 : 0),
+                "The placed gun lost its mark, trigger or move rule");
+
+        var origin = ModuleCombat.nozzle(copy, gun);
+        var east = spawnMoveCow(h, origin.add(7, 0, 0));
+        var west = spawnMoveCow(h, origin.add(-3, 0, 0));
+        copy.modules().tick(copy);
+        var shots = level.getEntitiesOfClass(ModuleShot.class, new AABB(origin, origin).inflate(12),
+                shot -> shot.getPersistentData().hasUUID(AttackHitCredit.MODULE)
+                        && gun.id().equals(shot.getPersistentData().getUUID(AttackHitCredit.MODULE)));
+        h.assertTrue(shots.size() == 1 && shots.getFirst().getDeltaMovement().x * (inherit ? 1 : -1) > 0,
+                "The placed gun did not fire at the expected target");
+        shots.forEach(Entity::discard);
+        east.discard();
+        west.discard();
+        gun.edit("enabled", 0, "");
+        h.succeed();
+    }
+
+    private static LivingEntity spawnMoveCow(GameTestHelper h, Vec3 center) {
+        var cow = EntityType.COW.create(h.getLevel());
+        cow.setNoAi(true);
+        cow.setNoGravity(true);
+        cow.setPos(center.add(0, -cow.getBbHeight() / 2, 0));
+        h.assertTrue(h.getLevel().addFreshEntity(cow), "Could not spawn target cow");
+        return cow;
+    }
+
+    private static int removeMoveTargetField(Tag tag) {
+        if (tag instanceof CompoundTag compound) {
+            if (compound.getString("Type").equals("move_rules")) {
+                var settings = compound.getCompound("Settings");
+                if (!settings.contains("inheritMoveTarget")) return 0;
+                settings.remove("inheritMoveTarget");
+                return 1;
+            }
+            return compound.getAllKeys().stream().mapToInt(key -> removeMoveTargetField(compound.get(key))).sum();
+        }
+        if (tag instanceof ListTag list) return list.stream().mapToInt(BlueprintSpawnGameTests::removeMoveTargetField).sum();
+        return 0;
+    }
+
     @GameTest(template="combat",batch="spawn_no_activate",timeoutTicks=40)
-    public static void LifeBlueprintDefaultsToDormantAndRedstoneBlueprintNeedsNoLifeActivation(GameTestHelper h){var c=core(h);var source=template(h,1,8);String name=source.core.creatureName();var m=module(h,c,source.tag);h.assertTrue(m.value("spawnActivate")==0,"Auto activation default changed");c.tryActivate(admin(h));h.succeedWhen(()->{var copies=LoadedCoreIndex.all(h.getLevel()).stream().filter(v->v!=source.core&&v.creatureName().equals(name)).toList();h.assertTrue(copies.size()==1&&copies.getFirst().health().state()==HeartState.DORMANT,"Auto activation Off spawned active life");h.assertTrue(BlueprintSpawns.snapshot(c,m).getInt("Count")==1,"Dormant placement did not complete");});}
+    public static void LifeBlueprintWithActivationOffSpawnsDormant(GameTestHelper h) {
+        var c = core(h);
+        var source = template(h, 1, 8);
+        String name = source.core.creatureName();
+        var m = module(h, c, source.tag);
+        var actor = admin(h);
+        actor.setPos(ModuleArena.corePosition(c));
+        var menu = new HeartDashboardMenu(1, actor.getInventory(), c);
+        h.assertTrue(editSpawnActivation(h, menu, actor, m, 0), "Could not disable activation from the dashboard");
+        h.assertTrue(VirtualModule.load(m.save()).value("spawnActivate") == 0, "Saved activation Off was lost");
+        c.tryActivate(actor);
+        h.succeedWhen(() -> {
+            var copies = LoadedCoreIndex.all(h.getLevel()).stream()
+                    .filter(v -> v != source.core && v.creatureName().equals(name)).toList();
+            h.assertTrue(copies.size() == 1 && copies.getFirst().health().state() == HeartState.DORMANT,
+                    "Auto activation Off spawned active life");
+            h.assertTrue(BlueprintSpawns.snapshot(c, m).getInt("Count") == 1, "Dormant placement did not complete");
+        });
+    }
+
+    @GameTest(template="combat",batch="spawn_activate_authoring")
+    public static void ActivationControlPreservesLegacyDataAndValidatesPermissionAndBlueprint(GameTestHelper h) {
+        var c = core(h);
+        var module = c.modules().add("blueprint_spawn");
+        h.assertTrue(VirtualModule.load(module.save()).value("spawnActivate") == 1, "Saved activation On was lost");
+        var legacy = module.save();
+        legacy.getCompound("Settings").remove("spawnActivate");
+        h.assertTrue(VirtualModule.load(legacy).value("spawnActivate") == 0, "Legacy module activation changed");
+
+        var actor = admin(h);
+        actor.setPos(ModuleArena.corePosition(c));
+        var menu = new HeartDashboardMenu(1, actor.getInventory(), c);
+        h.assertTrue(editSpawnActivation(h, menu, actor, module, 0)
+                        && editSpawnActivation(h, menu, actor, module, 1), "Empty module could not toggle activation");
+        h.assertTrue(!editSpawnActivation(h, menu, actor, module, 2), "Invalid activation value accepted");
+        actor.setGameMode(GameType.SURVIVAL);
+        h.assertTrue(!editSpawnActivation(h, menu, actor, module, 0), "Non-operator could disable activation");
+        actor.setGameMode(GameType.CREATIVE);
+
+        var coreless = SpawnTemplateBridge.inspect(template(h, 0, 8).tag);
+        h.assertTrue(BlueprintSpawns.install(c, module, "test", coreless) && module.value("spawnActivate") == 0,
+                "Coreless blueprint did not load with activation Off");
+        h.assertTrue(!editSpawnActivation(h, menu, actor, module, 1), "Coreless blueprint accepted activation On");
+        h.assertTrue(BlueprintSpawns.clear(actor, c, module) && editSpawnActivation(h, menu, actor, module, 1),
+                "Clearing the blueprint did not restore activation editing");
+        h.succeed();
+    }
+
+    private static boolean editSpawnActivation(GameTestHelper h, HeartDashboardMenu menu,
+            net.minecraft.server.level.ServerPlayer player, VirtualModule module, double value) {
+        var action = new ModuleNetworking.Action(menu.containerId, menu.snapshot().getInt("Revision"),
+                module.id(), "edit", "spawnActivate", value, "");
+        var buffer = new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(),
+                h.getLevel().registryAccess());
+        try {
+            ModuleNetworking.Action.CODEC.encode(buffer, action);
+            var decoded = ModuleNetworking.Action.CODEC.decode(buffer);
+            return menu.action(player, decoded.revision(), decoded.module(), decoded.operation(), decoded.key(),
+                    decoded.value(), decoded.text());
+        } finally {
+            buffer.release();
+        }
+    }
     @GameTest(template="combat",batch="spawn_conflict")
     public static void InvalidAutoActivationDoesNotGenerateAndPlainRedstoneStillPlaces(GameTestHelper h){var c=core(h);var m=module(h,c,template(h,3,8).tag);m.edit("spawnActivate",1,"");c.tryActivate(admin(h));BlueprintSpawns.tickCore(c);BlueprintSpawns.get(h.getLevel().getServer()).advance(h.getLevel().getServer());h.assertTrue(BlueprintSpawns.snapshot(c,m).getInt("Count")==0&&BlueprintSpawns.snapshot(c,m).getString("Error").equals("activation"),"Redstone-only template attempted Life activation");m.edit("spawnActivate",0,"");m.edit("trigger",2,"");BlueprintSpawns.tickCore(c);m.edit("trigger",0,"");BlueprintSpawns.tickCore(c);BlueprintSpawns.get(h.getLevel().getServer()).advance(h.getLevel().getServer());h.assertTrue(BlueprintSpawns.snapshot(c,m).getInt("Count")==1,"Redstone-only template failed ordinary placement");h.succeed();}
     @GameTest(template="combat",batch="spawn_death",timeoutTicks=65)

@@ -16,6 +16,45 @@ public final class SignalModuleGameTests {
  private static VirtualModule logic(HeartBlockEntity c,int input,int output){var m=c.modules().add("signal_logic");m.signalRules().rows().getFirst().edit("signalInput",input);m.edit("logicChannel",output,"");return m;}
  private static SignalRules.Row event(HeartBlockEntity c,int kind,int filter,int channel){var m=c.modules().all().stream().filter(v->v.type().equals("combat_event")).findFirst().orElseGet(()->c.modules().add("combat_event"));var r=m.signalRules().rows().getFirst();r.edit("eventKind",kind);r.edit("eventFilter",filter);r.edit("eventChannel",channel);r.edit("eventPulse",4);r.edit("eventCooldown",0);return r;}
  private static void input(HeartBlockEntity c,Map<Integer,Integer> inputs){c.wireless().programOutputs("test",inputs);}
+ @GameTest(template="combat",batch="logic_comparison")
+ public static void ComparesAnalogChannelsAndPreservesBindings(GameTestHelper h) {
+  var c=core(h);
+  var m=logic(c,1,3);
+  var row=m.signalRules().rows().getFirst();
+  row.edit("signalCompare",2);
+  input(c,Map.of(0,4,1,11));
+  boolean[] expected={false,true,false,true,false,true};
+  for(int index=0;index<expected.length;index++) {
+   row.edit("signalCondition",index+2);
+   c.modules().signalLogic.clear();
+   c.modules().signalLogic.tick(c);
+   h.assertTrue((c.wireless().output(2)>0)==expected[index],"Wrong strength comparison "+index);
+  }
+  row.edit("signalCondition",4);
+  var second=m.signalRules().add();
+  second.edit("signalInput",2);
+  boolean[] gates={false,true,true,true,false,false,false};
+  for(int gate=0;gate<gates.length;gate++) {
+   h.assertTrue(m.edit("logicMatch",gate,""),"Gate configuration rejected: "+gate);
+   c.modules().signalLogic.clear();
+   c.modules().signalLogic.tick(c);
+   h.assertTrue((c.wireless().output(2)>0)==gates[gate],"Wrong gate result: "+gate);
+  }
+  second.edit("enabled",0);
+  m.edit("logicMatch",6,"");
+  c.modules().signalLogic.clear();
+  c.modules().signalLogic.tick(c);
+  h.assertTrue(c.wireless().output(2)==15,"NOT did not negate comparison");
+  var saved=VirtualModule.load(m.save());
+  h.assertTrue(saved.value("logicMatch")==6&&saved.signalRules().rows().getFirst().value("signalCompare")==2,
+    "Gate or second input was lost on load");
+  c.wireless().remove(1);
+  h.assertTrue(row.value("signalCompare")==0&&m.value("logicChannel")==2,"Channel deletion did not update comparison");
+  c.modules().signalLogic.clear();
+  c.modules().signalLogic.tick(c);
+  h.assertTrue(c.wireless().output(1)==0,"NOT powered an invalid comparison");
+  h.succeed();
+ }
  @GameTest(template="combat",batch="logic_truth",timeoutTicks=30) public static void AndOrNotAndDisabledRowsUseActualChannels(GameTestHelper h){
   var c=core(h);var m=logic(c,1,3);var second=m.signalRules().add();second.edit("signalInput",2);input(c,Map.of(0,15));c.modules().signalLogic.tick(c);h.assertTrue(c.wireless().output(2)==0,"AND ignored false input");
   h.runAfterDelay(1,()->{m.edit("logicMatch",1,"");c.modules().signalLogic.tick(c);h.assertTrue(c.wireless().output(2)==15,"OR failed");second.edit("signalCondition",1);m.edit("logicMatch",0,"");});

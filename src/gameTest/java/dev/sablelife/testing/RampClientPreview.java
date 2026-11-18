@@ -9,6 +9,8 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.*;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.component.CustomData;
 import net.neoforged.api.distmarker.Dist;
@@ -35,16 +37,53 @@ public final class RampClientPreview {
     reload=mc.reloadResourcePacks();
     return;
    }
-   while(LifeUiStyle.density()!=2)LifeUiStyle.cycle();mc.options.guiScale().set(2);mc.resizeDisplay();screen=new Preview();mc.setScreen(screen);return;
+   while(LifeUiStyle.density()!=2)LifeUiStyle.cycle();mc.options.guiScale().set(3);mc.resizeDisplay();screen=new Preview();mc.setScreen(screen);return;
   }
   if(++ticks==15){check();var dir=mc.gameDirectory.toPath().resolve("screenshots");java.nio.file.Files.createDirectories(dir);try(var img=Screenshot.takeScreenshot(mc.getMainRenderTarget())){img.writeToFile(dir.resolve("wireless-redstone-ramp-aligned-"+language+".png"));}}
-  if(ticks==20){
-   System.out.println("Ramp dashboard layout, focus and disabled-control checks passed for " + language);
+  if(ticks==20)checkOutputFaces();
+  if(ticks==22){var dir=mc.gameDirectory.toPath().resolve("screenshots");try(var img=Screenshot.takeScreenshot(mc.getMainRenderTarget())){img.writeToFile(dir.resolve("wireless-redstone-output-faces-"+language+".png"));}}
+  if(ticks==24){
+   System.out.println("Ramp and output face dashboard checks passed for " + language);
    if(languageIndex+1==LANGUAGES.size()){mc.stop();return;}
    languageIndex++;
    ticks=0;
    screen=null;
   }
+ }
+ private static void checkOutputFaces() throws Exception {
+  var parameterKeys = ((List<ModuleFields.Field>)member("parameters")).stream().map(ModuleFields.Field::key).toList();
+  int slots = (int) member("parameterSlots");
+  var choices = (List<Button>) member("choices");
+  var previews = (List<Button>) member("outputPreviews");
+  var removals = (List<Button>) member("outputRemovals");
+  var next = (Button) member("nextParameters");
+  var previous = (Button) member("previousParameters");
+  var sync = HeartDashboardScreen.class.getDeclaredMethod("sync");
+  sync.setAccessible(true);
+  int faceCount = 0;
+  boolean foundAdd = false;
+  do {
+   int page = (int) member("parameterPage");
+   for (int row = 0; row < slots && page * slots + row < parameterKeys.size(); row++) {
+    var key = parameterKeys.get(page * slots + row);
+    var remark = choices.get(row);
+    var preview = previews.get(row);
+    var remove = removals.get(row);
+    if (key.startsWith("__output_face_")) {
+     if (!key.equals("__output_face_" + faceCount++) || !remark.visible || !preview.visible || !remove.visible
+       || !preview.active || remark.getY() != preview.getY() || preview.getY() != remove.getY()
+       || remark.getX() + remark.getWidth() >= preview.getX() || preview.getX() + preview.getWidth() >= remove.getX())
+      throw new AssertionError("Misaligned controls on " + key);
+    } else if (key.equals("__add_output_face")) {
+     foundAdd = remark.visible && remark.active && !preview.visible && !remove.visible;
+    }
+   }
+   if (!next.active) break;
+   next.onPress();
+   sync.invoke(screen.panel);
+  } while (true);
+  if (faceCount != 7 || !foundAdd || !previous.active)
+   throw new AssertionError("Output face pagination lost rows: " + faceCount + ", add=" + foundAdd);
  }
  private static Object member(String key)throws Exception{var f=HeartDashboardScreen.class.getDeclaredField(key);f.setAccessible(true);return f.get(screen.panel);}
  private static void check()throws Exception{
@@ -59,7 +98,7 @@ public final class RampClientPreview {
  }
  private static final class Preview extends Screen{
   HeartDashboardScreen panel;Preview(){super(Component.empty());}
-  @Override protected void init(){var modules=new HeartModules();var m=modules.add("wireless_redstone");m.edit("redstoneStrengthMode",2,"");var tag=modules.save();tag.putBoolean("Ready",true);tag.putBoolean("Editable",true);tag.putUUID("Selected",m.id());tag.getList("Modules",10).getCompound(0).putString("Status","valid");var inv=new Inventory(null);var menu=new HeartDashboardMenu(1,inv);var item=new ItemStack(Items.PAPER);item.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(item);panel=new HeartDashboardScreen(menu,inv,title);panel.init(minecraft,width,height);}
+  @Override protected void init(){var modules=new HeartModules();var m=modules.add("wireless_redstone");m.edit("redstoneStrengthMode",2,"");var body=UUID.randomUUID();m.anchors(java.util.stream.IntStream.range(0,7).mapToObj(i->new ModuleAnchor(body,new BlockPos(i,0,0),Direction.UP)).toList());var tag=modules.save();tag.putBoolean("Ready",true);tag.putBoolean("Editable",true);tag.putUUID("Selected",m.id());tag.getList("Modules",10).getCompound(0).putString("Status","valid");var inv=new Inventory(null);var menu=new HeartDashboardMenu(1,inv);var item=new ItemStack(Items.PAPER);item.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(item);panel=new HeartDashboardScreen(menu,inv,title);panel.init(minecraft,width,height);}
   @Override public void render(GuiGraphics g,int x,int y,float partial){panel.render(g,-100,-100,partial);}
  }
 }

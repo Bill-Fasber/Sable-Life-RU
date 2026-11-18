@@ -50,7 +50,7 @@ public final class DetachedLimbCleanup {
 
     public void tick(HeartBlockEntity heart, ServerLevel level) {
         long now = level.getGameTime();
-        if (!enabled || heart.health().state() != HeartState.ALIVE
+        if (!enabled || heart.health().state() != HeartState.ALIVE || heart.blueprintConnectionsSettling()
                 || Math.floorMod(now, SCAN_INTERVAL) != Math.floorMod(heart.creatureId().hashCode(), SCAN_INTERVAL)) return;
         var root = Sable.HELPER.getContaining(level, heart.getBlockPos());
         var container = SubLevelContainer.getContainer(level);

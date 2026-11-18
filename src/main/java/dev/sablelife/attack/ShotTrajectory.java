@@ -21,28 +21,25 @@ public final class ShotTrajectory {
     /** One shell per eligible, reachable target; single mode retains nearest feasible targeting. */
     public static List<Vec3> firingVelocities(ServerLevel world, HeartBlockEntity heart, VirtualModule module) {
         if (module.value("aimMode") == 0) return List.of(velocity(heart, module));
-        var result = new ArrayList<Vec3>();
         var start = ModuleCombat.nozzle(heart, module);
-        var targets = ModuleTargets.query(world, heart.creatureId(), new AABB(start, start).inflate(module.value("targetRange")),
-                e -> e.isAlive() && !e.isSpectator() && !(e instanceof net.minecraft.world.entity.player.Player p && p.isCreative()));
-        int mode = (int) module.value("target");
-        targets.removeIf(e -> !ModuleTargets.matches(e,module)
-                || SableBodyProbe.toWorld(world, e.position()).distanceToSqr(start) > Math.pow(module.value("targetRange"), 2));
-        targets.sort(ModuleTargets.comparator(heart,e -> SableBodyProbe.toWorld(world, e.position()).distanceToSqr(start)));
-        for (var target : targets) {
-            var delta = SableBodyProbe.toWorld(world, target.position()).add(0, .05, 0).subtract(start);
-            Vec3 solution = null;
-            // Last feasible duration gives the high arc. Integer duration lands exactly at the snapshot.
-            for (int ticks = 1; ticks <= 600; ticks++) {
-                var v = new Vec3(delta.x / ticks, delta.y / ticks + GRAVITY * (ticks - 1) / 2, delta.z / ticks);
-                if (v.y > 0 && v.lengthSqr() <= module.value("speed") * module.value("speed")) solution = v;
-            }
-            if (solution != null) {
-                result.add(solution);
-                if (module.value("targetMultiple") == 0 || result.size() >= 64) break;
-            }
+        double range = module.value("targetRange"), speed = module.value("speed");
+        boolean requireSight = module.value("lineOfSight") == 1;
+        boolean multiple = module.value("targetMultiple") == 1;
+        return ModuleTargets.aimedResults(world, heart, new AABB(start, start).inflate(range),
+                e -> ModuleTargets.matches(e, module) && SableBodyProbe.toWorld(world, e.position()).distanceToSqr(start) <= range * range,
+                ModuleTargets.comparator(heart, e -> SableBodyProbe.toWorld(world, e.position()).distanceToSqr(start)),
+                e -> requireSight && !ModuleTargets.visible(world, heart.creatureId(), start, e) ? null
+                        : ballisticVelocity(SableBodyProbe.toWorld(world, e.position()).add(0, .05, 0).subtract(start), speed),
+                ModuleTargets.attackTarget(heart, module), multiple).limit(multiple ? 64 : 1).toList();
+    }
+    private static Vec3 ballisticVelocity(Vec3 delta, double speed) {
+        Vec3 solution = null;
+        // Last feasible duration gives the high arc. Integer duration lands exactly at the snapshot.
+        for (int ticks = 1; ticks <= 600; ticks++) {
+            var velocity = new Vec3(delta.x / ticks, delta.y / ticks + GRAVITY * (ticks - 1) / 2, delta.z / ticks);
+            if (velocity.y > 0 && velocity.lengthSqr() <= speed * speed) solution = velocity;
         }
-        return List.copyOf(result); // No target in reach: do not fire an unrelated fixed-direction shell.
+        return solution;
     }
     public static Vec3 velocity(HeartBlockEntity heart, VirtualModule module) {
         var forward = ModuleCombat.direction(heart, module).multiply(1, 0, 1);

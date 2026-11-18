@@ -57,10 +57,15 @@ public final class ModuleQuake {
         return ModuleGroundStrike.floor(level,heart,target.position(),target instanceof ModuleTargets.LifeTarget?target.getUUID():null);
     }
     public static List<LivingEntity> detectTargets(ServerLevel level, HeartBlockEntity heart, VirtualModule m, Vec3 origin) {
+        return detectTargets(level, heart, m, origin, origin, e -> e, null, true).toList();
+    }
+    private static <T> java.util.stream.Stream<T> detectTargets(ServerLevel level, HeartBlockEntity heart, VirtualModule m,
+            Vec3 origin, Vec3 sightOrigin, java.util.function.Function<LivingEntity, T> result, UUID inherited, boolean multiple) {
         double radius = m.value("quakeDetectRange");
-        return ModuleTargets.query(level, heart.creatureId(), new AABB(origin, origin).inflate(radius), e -> eligible(e, m))
-                .stream().filter(e -> e.position().distanceToSqr(origin) <= radius * radius)
-                .sorted(ModuleTargets.comparator(heart,e -> e.position().distanceToSqr(origin))).toList();
+        return ModuleTargets.aimedResults(level, heart, new AABB(origin, origin).inflate(radius),
+                e -> eligible(e, m) && e.position().distanceToSqr(origin) <= radius * radius,
+                ModuleTargets.comparator(heart, e -> e.position().distanceToSqr(origin)),
+                e -> ModuleTargets.attackVisible(level, heart, m, sightOrigin, e) ? result.apply(e) : null, inherited, multiple);
     }
     private static boolean path(VirtualModule m, Vec3 d, Vec3 delta, double previous, double current) {
         if (m.value("quakeMode") == 2) return Math.hypot(delta.x, delta.z) <= m.value("quakeRange");
@@ -96,13 +101,14 @@ public final class ModuleQuake {
         player.displayClientMessage(net.minecraft.network.chat.Component.translatable("dashboard.sablelife.quake_help"), true);
     }
     private boolean begin(HeartBlockEntity heart, VirtualModule module, State s, long now) {
-        var origin = ModuleGroundStrike.floor(level, heart, module.emitter()!=null?module.emitter().position():module.anchors().getFirst().world(heart,false).add(direction(heart,module).scale(module.value("startDistance"))));
+        var start = module.emitter()!=null?module.emitter().position():module.anchors().getFirst().world(heart,false).add(direction(heart,module).scale(module.value("startDistance")));
+        var origin = ModuleGroundStrike.floor(level, heart, start);
         if (origin == null) return false;
         List<Vec3> centers = List.of(origin);
         if (module.emitter()==null&&module.value("quakeOrigin") == 1) {
-            centers = detectTargets(level, heart, module, origin).stream()
-                    .map(e -> targetFloor(level, heart, e)).filter(Objects::nonNull)
-                    .distinct().limit(module.value("targetMultiple") == 1 ? 64 : 1).toList();
+            boolean multiple = module.value("targetMultiple") == 1;
+            centers = detectTargets(level, heart, module, origin, start, e -> targetFloor(level, heart, e),
+                    ModuleTargets.attackTarget(heart, module), multiple).distinct().limit(multiple ? 64 : 1).toList();
             if (centers.isEmpty()) return false;
         }
         if(!dev.sablelife.heart.SurvivalTokens.chargeCast(heart,module,centers.size()))return false;

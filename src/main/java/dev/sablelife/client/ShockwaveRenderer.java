@@ -33,15 +33,16 @@ public final class ShockwaveRenderer {
   for(var w:chosen){
    if(projected.size()>=ShockwaveClient.MAX_WAVES)break;
    var p=w.packet();var screen=ShockwaveMath.project(p.point(),camera,view,projection);
-   if(screen==null)continue;
    float fade=(float)ShockwaveMath.attenuation(camera.distanceTo(p.point()),p.range())*scale;
    double age=time-w.born();
    if(fade<=0||p.distortion()==0&&p.blur()==0)continue;
    if(p.pattern()==1){
     float strength=p.blur()*fade*(float)ShockwaveMath.envelope(age,p.expansion());
     if(strength<=0)continue;
-    projected.add(new float[]{screen.x(),screen.y(),0,1,0,strength,1,p.clearRadius()});
+    var center=ShockwaveMath.radialCenter(screen);
+    projected.add(new float[]{center.x(),center.y(),0,1,0,strength,1,p.clearRadius()});
    }else{
+    if(screen==null)continue;
     double radius=ShockwaveMath.radius(age,p.expansion(),p.radius(),p.reverse());
     float strength=fade*(float)ShockwaveMath.waveStrength(age,p.expansion());
     projected.add(new float[]{screen.x(),screen.y(),(float)Math.min(8,screen.unitRadius()*radius),

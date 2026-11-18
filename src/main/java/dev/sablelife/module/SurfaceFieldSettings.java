@@ -5,6 +5,16 @@ import java.util.List;
 /** Shared mode visibility, also exercised without a client. Stored hidden values are retained. */
 public final class SurfaceFieldSettings {
     public static boolean visible(VirtualModule m,String key){
+        if (key.equals("lineOfSight")) return switch (m.type()) {
+            case "mortar" -> m.value("aimMode") == 1;
+            case "arrow", "gun", "slash" -> m.value("shotAim") == 1;
+            case "laser" -> m.value("laserAim") == 1;
+            case "ground_strike" -> m.value("strikeMode") == 2;
+            case "quake" -> m.value("quakeOrigin") == 1;
+            case "sphere_blast", "freeze", "pulse" -> TargetCastOrigin.targeted(m);
+            case "summoned_weapon" -> m.value("summonAim") == 1;
+            default -> true;
+        };
         if(key.equals("watchedPart")||key.equals("partBreakThreshold"))return m.listensToPart();
         if(m.type().equals("visual_shockwave")){
             if(List.of("filterColor","filterStrength","filterFadeIn","filterFadeOut").contains(key))return m.value("filterEnabled")==1;

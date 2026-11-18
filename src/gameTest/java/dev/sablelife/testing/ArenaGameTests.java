@@ -29,10 +29,12 @@ public final class ArenaGameTests {
         m.arenaCenter(ModuleArena.corePosition(heart).add(8,0,0),heart.getLevel().dimension().location().toString());
         return m;
     }
-    @GameTest(template="combat",timeoutTicks=60)
+    @GameTest(template="combat",timeoutTicks=80)
     public static void DeathTogglePreservesWarningsAndCanBeReenabled(GameTestHelper h) throws Exception {
         var heart=fixture(h); var m=arena(heart);
         h.assertTrue(m.value("arenaDeath")==1&&m.value("arenaForceReturn")==0,"Old Arena behavior must remain the default");
+        h.assertTrue(m.value("arenaPlayerDeathCountdown")==100,"New player death countdown must default to five seconds");
+        m.edit("arenaPlayerDeathCountdown",40,"");
         var player=new net.neoforged.neoforge.common.util.FakePlayer(h.getLevel(),new com.mojang.authlib.GameProfile(UUID.randomUUID(),"ArenaTester")) {
             @Override public boolean isInvulnerableTo(net.minecraft.world.damagesource.DamageSource source) { return false; }
         };
@@ -47,9 +49,29 @@ public final class ArenaGameTests {
             m.edit("arenaDeath",1,"");runtime.tick(heart);
         });
         h.runAfterDelay(42,()->{
+            runtime.tick(heart);h.assertTrue(player.isAlive(),"The nonlethal countdown ended the independent player death countdown too soon");
+            m.edit("countdown",70,"");
+            runtime.tick(heart);
+        });
+        h.runAfterDelay(62,()->{
             runtime.tick(heart);h.assertTrue(!player.isAlive(),"Enabled punishment did not kill after its full countdown");
             runtime.clear();h.getLevel().players().remove(player);h.succeed();
         });
+    }
+    @GameTest(template="combat",timeoutTicks=20)
+    public static void LegacyCountdownMigratesWithoutRelinkingPlayerDeath(GameTestHelper h) {
+        var legacy = new VirtualModule("arena").save();
+        var settings = legacy.getCompound("Settings");
+        settings.putDouble("countdown", 180);
+        settings.remove("arenaPlayerDeathCountdown");
+        var migrated = VirtualModule.load(legacy);
+        h.assertTrue(migrated.value("countdown") == 180 && migrated.value("arenaPlayerDeathCountdown") == 180,
+                "The legacy countdown was not preserved for both warning modes");
+        migrated.edit("countdown", 140, "");
+        var reloaded = VirtualModule.load(migrated.save());
+        h.assertTrue(reloaded.value("countdown") == 140 && reloaded.value("arenaPlayerDeathCountdown") == 180,
+                "Modern saves must keep both countdowns independent");
+        h.succeed();
     }
     @GameTest(template="combat",timeoutTicks=40)
     public static void ForcedReturnRestoresHealthAndOverridesPlayerWarning(GameTestHelper h) {

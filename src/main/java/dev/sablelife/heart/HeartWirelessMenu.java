@@ -20,6 +20,7 @@ public final class HeartWirelessMenu extends AbstractContainerMenu {
             CHANNEL_LIMIT = MASTER + 9, ROWS = MASTER + 10, LATCH = MASTER + 11, LATCH_RESET = MASTER + 12, DATA_COUNT = MASTER + 13;
     private final HeartBlockEntity heart;
     private final Player viewer;
+    private final int outputRow;
     private int selected, page, rowCount = DEFAULT_ROWS;
     private final ContainerData data;
     private final SimpleContainer frequencies = new SimpleContainer(2);
@@ -29,8 +30,11 @@ public final class HeartWirelessMenu extends AbstractContainerMenu {
     public HeartWirelessMenu(int id, Inventory inventory) { this(id, inventory, null); }
     public HeartWirelessMenu(int id, Inventory inventory, HeartBlockEntity heart) { this(id,inventory,heart,0); }
     public HeartWirelessMenu(int id, Inventory inventory, HeartBlockEntity heart,int channel) {
+        this(id,inventory,heart,channel,-1);
+    }
+    public HeartWirelessMenu(int id, Inventory inventory, HeartBlockEntity heart,int channel,int outputRow) {
         super(SableLife.WIRELESS_MENU.get(), id);
-        this.heart = heart; viewer = inventory.player; selected=Math.max(0,channel);page=selected/rowCount;
+        this.heart = heart; this.outputRow = outputRow; viewer = inventory.player; selected=Math.max(0,channel);page=selected/rowCount;
         data = heart == null ? new SimpleContainerData(DATA_COUNT) : new ContainerData() {
             @Override public int getCount() { return DATA_COUNT; }
             @Override public void set(int index, int value) {}
@@ -71,10 +75,50 @@ public final class HeartWirelessMenu extends AbstractContainerMenu {
         });
         refresh();
     }
-    public String channelName(int channel) {
-        var data = names.getItem(0).getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.EMPTY);
+    public net.minecraft.nbt.CompoundTag outputSnapshot() {
+        var data = names.getItem(0).getOrDefault(net.minecraft.core.component.DataComponents.CUSTOM_DATA,
+                net.minecraft.world.item.component.CustomData.EMPTY);
         if (data != decodedNames) { decodedNames = data; nameSnapshot = data.copyTag(); }
-        var tag = nameSnapshot;
+        return nameSnapshot;
+    }
+
+    public boolean outputAction(Player player, int revision, String operation, double value) {
+        return outputAction(player,revision,operation,value,"");
+    }
+
+    public boolean outputAction(Player player, int revision, String operation, double value, String text) {
+        if (heart == null || !stillValid(player) || revision != heart.wireless().faceRevision()
+                || value < 0 || value > (long)HeartWireless.CHANNELS * 128 || value != Math.rint(value)) return false;
+        int channelIndex = (int)value / 128, index = (int)value % 128;
+        if (channelIndex != selected || channelIndex >= heart.wireless().size()
+                || index >= WirelessChannel.MAX_OUTPUT_FACES) return false;
+        var channel = heart.wireless().channel(channelIndex);
+        if (operation.equals("preview")) {
+            if (!(player instanceof net.minecraft.server.level.ServerPlayer server) || index >= channel.outputFaces().size()) return false;
+            return dev.sablelife.module.MarkingSessions.showChannelFace(server,heart,channel,channelIndex,index);
+        }
+        if (!heart.canEdit(player) || !dev.sablelife.module.AuthoringRateLimit.allow(player, 1)) return false;
+        if (operation.equals("mark"))
+            return dev.sablelife.module.MarkingSessions.startChannelFace(player,heart,channelIndex,channel,index);
+        boolean changed = switch (operation) {
+            case "rename" -> channel.renameOutputFace(index,text);
+            case "remove" -> channel.removeOutputFace(index);
+            default -> false;
+        };
+        if (!changed) return false;
+        heart.setChanged();
+        refresh(); sendAllDataToRemote();
+        return true;
+    }
+
+    public int outputFaceLimit() {
+        var tag = outputSnapshot();
+        return tag.contains("OutputFaceLimit", 99)
+                ? Math.clamp(tag.getInt("OutputFaceLimit"), 1, WirelessChannel.MAX_OUTPUT_FACES) : WirelessChannel.MAX_OUTPUT_FACES;
+    }
+
+    public String channelName(int channel) {
+        var tag = outputSnapshot();
         if (channel == tag.getInt("Selected") && tag.contains("SelectedName")) return tag.getString("SelectedName");
         var rows = tag.getList("Names", 8); int row = channel - tag.getInt("Page") * Math.max(1, tag.getInt("Rows"));
         return tag.contains("Page") && row >= 0 && row < rows.size() ? rows.getString(row) : "";
@@ -118,7 +162,21 @@ public final class HeartWirelessMenu extends AbstractContainerMenu {
         tag.putInt("Selected", selected); tag.putString("SelectedName", channel.name()); tag.putInt("Page", page); tag.putInt("Rows", rowCount);
         for (int i = page * rowCount; i < Math.min(heart.wireless().size(), (page + 1) * rowCount); i++)
             rows.add(net.minecraft.nbt.StringTag.valueOf(heart.wireless().channel(i).name()));
-        tag.put("Names", rows); var stack = new ItemStack(net.minecraft.world.item.Items.PAPER);
+        tag.put("Names", rows);
+        tag.putInt("OutputRow",outputRow);
+        tag.putInt("FaceRevision",heart.wireless().faceRevision());
+        var faces = new net.minecraft.nbt.ListTag();
+        int index = 0;
+        for (var anchor : channel.outputFaces()) {
+            var face = new net.minecraft.nbt.CompoundTag();
+            face.putString("Face",anchor.face().getName());
+            face.putString("Status",anchor.status(heart));
+            face.putString("Name",channel.outputFaceName(index++));
+            faces.add(face);
+        }
+        tag.put("OutputFaces",faces);
+        tag.putInt("OutputFaceLimit",dev.sablelife.SableLifeServerConfig.maximumRedstoneOutputFaces());
+        var stack = new ItemStack(net.minecraft.world.item.Items.PAPER);
         stack.set(net.minecraft.core.component.DataComponents.CUSTOM_DATA, net.minecraft.world.item.component.CustomData.of(tag)); names.setItem(0, stack);
     }
     @Override public void broadcastChanges() { refresh(); super.broadcastChanges(); }

@@ -10,6 +10,8 @@ import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.phys.*;
 import java.util.*;
 import java.util.function.Predicate;
+import java.util.function.Function;
+import java.util.stream.Stream;
 
 /** Shared, extensible target categories. Core adapters never enter the entity world or save/network. */
 public final class ModuleTargets {
@@ -60,6 +62,45 @@ public final class ModuleTargets {
         refresh(target);
         return dev.sablelife.sense.SensorGeometry.visible(level,owner,start,target.getBoundingBox().getCenter(),target instanceof LifeTarget ? target.getUUID() : null);
     }
+    static boolean attackVisible(ServerLevel level, HeartBlockEntity core, VirtualModule module, Vec3 origin, LivingEntity target) {
+        // Pull's existing On/Off field uses the opposite saved indices.
+        int on = module.type().equals("pull") ? 0 : 1;
+        return module.value("lineOfSight") != on || visible(level, core.creatureId(), origin, target);
+    }
+    public static UUID inheritedTarget(HeartBlockEntity core, VirtualModule module) {
+        return module.emitter() == null && module.value("trigger") == 4 ? core.modules().moveTarget(module.id()) : null;
+    }
+
+    /** A wand order supplies an aim preference for an attack that has already been triggered. */
+    public static UUID attackTarget(HeartBlockEntity core, VirtualModule module) {
+        if (module.emitter() != null || !(core.getLevel() instanceof ServerLevel level)) return null;
+        var commanded = core.modules().commandTarget().weaponTarget(level);
+        return commanded != null ? commanded : inheritedTarget(core, module);
+    }
+
+    public static List<LivingEntity> aimedTargets(ServerLevel level, HeartBlockEntity core, AABB bounds,
+            Predicate<LivingEntity> eligible, Comparator<LivingEntity> order, Predicate<LivingEntity> valid, int limit, UUID inherited) {
+        return aimedResults(level, core, bounds, eligible, order, target -> valid.test(target) ? target : null,
+                inherited, limit > 1).limit(limit).toList();
+    }
+
+    /** An inherited target must pass both acquisition and cast geometry before other targets are considered. */
+    public static <T> Stream<T> aimedResults(ServerLevel level, HeartBlockEntity core, AABB bounds,
+            Predicate<LivingEntity> eligible, Comparator<LivingEntity> order, Function<LivingEntity, T> result,
+            UUID inherited, boolean multiple) {
+        var owner = core.creatureId();
+        if (inherited == null) {
+            return query(level, owner, bounds, eligible).stream().sorted(order).map(result).filter(Objects::nonNull);
+        }
+        var target = resolve(level, inherited, owner);
+        if (target == null || target.isRemoved() || !bounds.intersects(target.getBoundingBox()) || !eligible.test(target)) return Stream.empty();
+        T first = result.apply(target);
+        if (first == null) return Stream.empty();
+        if (!multiple) return Stream.of(first);
+        var others = query(level, owner, bounds, entity -> !inherited.equals(entity.getUUID()) && eligible.test(entity))
+                .stream().sorted(order).map(result).filter(Objects::nonNull);
+        return Stream.concat(Stream.of(first), others);
+    }
     /** Attack impulses only: movement, gravity, attraction and native contact physics stay independent. */
     public static void attackPush(LivingEntity victim,Vec3 impulse){
         double scale=victim instanceof LifeTarget life?1-life.heart.knockbackResistance()/100:1;
@@ -104,7 +145,7 @@ public final class ModuleTargets {
         @Override public boolean isAlive() { return heart!=null && !heart.isRemoved() && heart.health().state()==HeartState.ALIVE; }
         @Override public float getHealth() { return heart==null ? super.getHealth() : heart.health().current(); }
         @Override public boolean hurt(net.minecraft.world.damagesource.DamageSource source,float amount) {
-            boolean alive=isAlive();boolean hit=alive&&heart.acceptsLifeAttack(attacker)&&(dev.sablelife.combat.EntityHitboxes.mode(heart)?heart.modules().damageBoxes.lifeHit(heart,source,amount):heart.damageAt(heart.getBlockPos(),amount));
+            boolean alive=isAlive();boolean hit=alive&&heart.acceptsLifeAttack(attacker)&&(dev.sablelife.combat.EntityHitboxes.mode(heart)?heart.modules().damageBoxes.lifeHit(heart,source,amount):heart.damageAt(heart.getBlockPos(),amount,null,dev.sablelife.combat.EntityHitboxes.hitType(source,level().getGameTime())));
             if(hit&&!isAlive()&&level() instanceof ServerLevel server)dev.sablelife.attack.CombatEventHooks.emit(server,source,0,2,heart.creatureId());return hit;
         }
     }

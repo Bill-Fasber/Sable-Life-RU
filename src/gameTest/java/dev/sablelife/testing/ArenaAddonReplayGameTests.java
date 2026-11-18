@@ -14,8 +14,9 @@ public final class ArenaAddonReplayGameTests {
    h.runAfterDelay(20,()->{
     var root=dev.ryanhcode.sable.Sable.HELPER.getContaining(h.getLevel(),core.getBlockPos());
     h.assertTrue(root!=null&&dev.ryanhcode.sable.api.SubLevelHelper.getConnectedChain(root).size()==expected,"Addon joints did not reconnect all recorded parts");
+    h.assertTrue(core.configure(100,0),"Could not set the test core's death delay before activation");
     h.assertTrue(core.activateForRespawn(),"Restored connected template cannot activate");build.captureOwnership(core);
-    var ids=build.bodies();h.assertTrue(dev.sablelife.ownership.BodyOwnership.get(h.getLevel()).bodyIds(h.getLevel(),core.creatureId()).size()==expected,"Addon parts lack ownership");core.configure(100,0);core.forceDeath();
+    var ids=build.bodies();h.assertTrue(dev.sablelife.ownership.BodyOwnership.get(h.getLevel()).bodyIds(h.getLevel(),core.creatureId()).size()==expected,"Addon parts lack ownership");core.forceDeath();
     h.succeedWhen(()->{h.assertTrue(dev.sablelife.ownership.LifeLifecycle.get(h.getLevel().getServer()).finished(core.creatureId()),"Waiting for addon cleanup");var container=dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(h.getLevel());for(var id:ids)h.assertTrue(container.getSubLevel(id)==null||container.getSubLevel(id).isRemoved(),"Addon part survived death cleanup");});
    });}});
  }

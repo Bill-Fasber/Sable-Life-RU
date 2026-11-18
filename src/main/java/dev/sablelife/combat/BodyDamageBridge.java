@@ -14,22 +14,27 @@ public final class BodyDamageBridge {
  private static final String HITS="SableLifeHitCreatures";
  public interface BlastProfile{double sablelife$blastRange();float sablelife$blastDamage(double distance);}
  public static boolean hit(Entity source,BlockHitResult hit,float amount){
-  if(!(source.level() instanceof ServerLevel level)||source.isRemoved()||!Float.isFinite(amount)||amount<=0)return false;var core=SableBodyProbe.findActivatedHeart(level,hit.getBlockPos());if(core==null||core.isControlCore()||core.health().state()!=HeartState.ALIVE)return false;
+  if(!(source.level() instanceof ServerLevel level)||source.isRemoved()||!Float.isFinite(amount)||amount<=0)return false;
+  var core=BodyCombat.findDamageHeart(level,hit.getBlockPos());
+  return core!=null&&hit(level,core,source,hit,amount);
+ }
+ static boolean hit(ServerLevel level,HeartBlockEntity core,Entity source,BlockHitResult hit,float amount){
+  if(core.isRemoved()||core.isControlCore()||core.health().state()!=HeartState.ALIVE)return false;
   var data=source.getPersistentData();if(data.hasUUID("SableLifeAttackOwner")&&!core.acceptsLifeAttack(data.getUUID("SableLifeAttackOwner")))return false;
-  var hits=data.getCompound(HITS);var key=core.creatureId().toString();if(hits.getBoolean(key)||hits.getAllKeys().size()>=64)return false;float before=core.health().current();if(!core.modules().damageBoxes.bodyDamage(core,source,hit.getBlockPos(),Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH),true,false))return false;
+  var hits=data.getCompound(HITS);var key=core.creatureId().toString();if(hits.getBoolean(key)||hits.getAllKeys().size()>=64)return false;float before=core.health().current();if(!core.modules().damageBoxes.bodyDamage(core,source,hit.getBlockPos(),Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH),true,false,true))return false;
   dev.sablelife.attack.AttackHitCredit.record(source,Math.max(0,before-core.health().current()));dev.sablelife.attack.CombatEventHooks.killed(source,core);
   hits.putBoolean(key,true);data.put(HITS,hits);BodyCombat.feedback(level,hit,core,before-core.health().current(),source instanceof Projectile p&&p.getOwner() instanceof net.minecraft.world.entity.player.Player player?player:null,false);return true;
  }
  public static void externalProjectile(ExternalProjectileDamageSource source,BlockHitResult hit,float amount){
   var projectile=source.getDirectEntity();
   if(!(projectile.level() instanceof ServerLevel level)||projectile.isRemoved()||!Float.isFinite(amount)||amount<=0)return;
-  var core=SableBodyProbe.findActivatedHeart(level,hit.getBlockPos());
+  var core=BodyCombat.findDamageHeart(level,hit.getBlockPos());
   if(core==null||core.isControlCore()||core.health().state()!=HeartState.ALIVE||EntityHitboxes.blocksStructure(core))return;
   core.modules().damageBoxes.externalProjectileBody(core,source,hit,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH));
  }
  public static float contact(Entity source,BlockHitResult hit,float damage){
   if(source==null||source.isRemoved()||source instanceof LivingEntity living&&!living.isAlive()||!(source.level() instanceof ServerLevel level)||hit==null||hit.getType()!=HitResult.Type.BLOCK||!Double.isFinite(hit.getLocation().lengthSqr())||!Float.isFinite(damage)||damage<=0)return 0;
-  var core=SableBodyProbe.findActivatedHeart(level,hit.getBlockPos());
+  var core=BodyCombat.findDamageHeart(level,hit.getBlockPos());
   if(core==null||core.isRemoved()||core.isControlCore()||core.health().state()!=HeartState.ALIVE)return 0;
   var data=source.getPersistentData();if(data.hasUUID("SableLifeAttackOwner")&&!core.acceptsLifeAttack(data.getUUID("SableLifeAttackOwner")))return 0;
   float before=core.health().current();if(!core.modules().damageBoxes.bodyDamage(core,source,hit.getBlockPos(),Math.min(damage,HeartHealth.MAX_CONFIGURED_HEALTH),false,true))return 0;
@@ -40,8 +45,8 @@ public final class BodyDamageBridge {
  public static boolean melee(net.minecraft.server.level.ServerPlayer player,HeartBlockEntity core,net.minecraft.core.BlockPos block,Vec3 point,float amount) {
   var level=player.serverLevel();
   if(player.isSpectator()||core.getLevel()!=level||core.isRemoved()||core.isControlCore()||!Float.isFinite(amount)||amount<=0
-      ||!core.creatureId().equals(dev.sablelife.ownership.BodyOwnership.get(level).owner(block)))return false;
-  float before=core.health().current();if(!core.modules().damageBoxes.bodyDamage(core,player,block,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH),false,false))return false;
+      ||!BodyCombat.ownsDamageBlock(level,core,block))return false;
+  float before=core.health().current();if(!core.modules().damageBoxes.bodyDamage(core,player,block,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH),false,false,dev.sablelife.module.ArmorRules.HitType.MELEE))return false;
   BodyCombat.feedback(level,new BlockHitResult(point,net.minecraft.core.Direction.UP,block,false),core,before-core.health().current(),player,false);return true;
  }
  // Iron's Arms 'n Artifice resolves per-pellet damage from current velocity through resolveDamage().

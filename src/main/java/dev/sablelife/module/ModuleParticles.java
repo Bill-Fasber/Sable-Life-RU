@@ -44,7 +44,18 @@ public final class ModuleParticles {
         for (var player : level.players()) if(player.position().distanceToSqr(x,y,z)<=512*512&&VisualBudget.allow(player,Math.max(1,count)))
             level.sendParticles(player, particle, true, x, y, z, count, dx, dy, dz, speed);
     }
-    public static final java.util.Set<String> BUNDLED = Set.of("sablelife:arc","sablelife:smoke","sablelife:energy_mote","sablelife:branching_arc","sablelife:spark","sablelife:light_ring","sablelife:inward_ring","sablelife:crescent","sablelife:soft_fog","sablelife:starburst","sablelife:random_starburst");
+    private static final Map<String, Integer> SPRITE_COLORS;
+    public static final Set<String> BUNDLED;
+    static {
+        var colors = new HashMap<String, Integer>();
+        for (var style : ParticleSpriteStyle.values()) colors.put(style.id(), style.color());
+        SPRITE_COLORS = Map.copyOf(colors);
+        var bundled = new HashSet<>(Set.of("sablelife:arc","sablelife:smoke","sablelife:energy_mote","sablelife:branching_arc","sablelife:spark","sablelife:light_ring","sablelife:inward_ring","sablelife:crescent","sablelife:soft_fog","sablelife:starburst","sablelife:random_starburst"));
+        bundled.addAll(SPRITE_COLORS.keySet());
+        BUNDLED = Set.copyOf(bundled);
+    }
+
+    public static int defaultColor(String id) { return SPRITE_COLORS.getOrDefault(id, 0xFFFFFF); }
     public static boolean colorable(String id){return BUNDLED.contains(id)||Set.of("minecraft:effect","minecraft:instant_effect","minecraft:entity_effect","minecraft:dust").contains(id);}
     public static net.minecraft.core.particles.ParticleOptions options(Entry entry){
         int color=entry.color()<0?0xFFFFFF:entry.color();

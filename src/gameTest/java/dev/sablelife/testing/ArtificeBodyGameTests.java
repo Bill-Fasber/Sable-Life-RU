@@ -31,7 +31,7 @@ public final class ArtificeBodyGameTests {
         var body=SubLevelAssemblyHelper.assembleBlocks(l,p,List.of(p,p.east()),new BoundingBox3i(p.getX(),p.getY(),p.getZ(),p.getX()+1,p.getY(),p.getZ()));
         var c=(HeartBlockEntity)l.getBlockEntity(body.getPlot().getCenterBlock());c.configure(1000,60);c.tryActivate(TestActors.creative(l));return c;
     }
-    private static Projectile bullet(GameTestHelper h,double speed,int count)throws Exception{
+    static Projectile bullet(GameTestHelper h,double speed,int count)throws Exception{
         var id=ResourceLocation.fromNamespaceAndPath("irons_artifice","bullet");
         h.assertTrue(BuiltInRegistries.ENTITY_TYPE.containsKey(id),"Run with -PartificeTests=true and the pinned optional jars");
         var b=(Projectile)BuiltInRegistries.ENTITY_TYPE.get(id).create(h.getLevel());
@@ -42,7 +42,7 @@ public final class ArtificeBodyGameTests {
         set.invoke(map,components.getField("PROJECTILE_COUNT").get(null),value.getMethod("of",double.class).invoke(null,(double)count));
         b.setDeltaMovement(speed,0,0);return b;
     }
-    private static void impact(Projectile b,HitResult hit)throws Exception{
+    static void impact(Projectile b,HitResult hit)throws Exception{
         var method=b.getClass().getDeclaredMethod("onHit",HitResult.class);method.setAccessible(true);method.invoke(b,hit);
     }
     private static BlockHitResult hit(HeartBlockEntity c){return new BlockHitResult(c.getBlockPos().east().getCenter(),Direction.WEST,c.getBlockPos().east(),false);}

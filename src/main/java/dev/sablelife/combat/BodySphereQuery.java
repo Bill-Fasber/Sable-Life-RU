@@ -1,6 +1,8 @@
 package dev.sablelife.combat;
 import dev.ryanhcode.sable.Sable;
 import dev.ryanhcode.sable.api.SubLevelHelper;
+import dev.ryanhcode.sable.sublevel.SubLevel;
+import dev.sablelife.compat.letitwalk.WalkerLegDamage;
 import dev.sablelife.heart.*;
 import dev.sablelife.module.CollisionWorkBudget;
 import dev.sablelife.ownership.*;
@@ -15,9 +17,10 @@ public final class BodySphereQuery {
  public static List<Hit> query(ServerLevel level,Vec3 center,Vec3 eye,double radius){
   if(level==null||center==null||eye==null||!Double.isFinite(center.lengthSqr())||!Double.isFinite(eye.lengthSqr())||!Double.isFinite(radius)||radius<=0||radius>256||center.distanceToSqr(eye)>256*256||Math.abs(center.x)>30000000||Math.abs(center.y)>30000000||Math.abs(center.z)>30000000)return List.of();
   var result=new ArrayList<Hit>();var budget=CollisionWorkBudget.begin(level);
-  for(var core:LoadedCoreIndex.query(level,new AABB(center,center).inflate(radius))){
+  for(var entry:candidates(level,new AABB(center,center).inflate(radius)).entrySet()){
+   var core=entry.getKey();
    if(core.isControlCore()||core.isRemoved()||core.health().state()!=HeartState.ALIVE)continue;
-   var hit=nearest(level,core,center,eye,radius,budget,null,null);if(hit!=null)result.add(hit);
+   var hit=nearest(level,core,center,eye,radius,budget,null,null,entry.getValue());if(hit!=null)result.add(hit);
    if(result.size()>=64||CollisionWorkBudget.exhausted(level))break;
   }
   result.sort(Comparator.comparingDouble(Hit::distance));return List.copyOf(result);
@@ -32,9 +35,10 @@ public final class BodySphereQuery {
   var center=bounds.getCenter();double radius=Math.sqrt(bounds.getXsize()*bounds.getXsize()+bounds.getYsize()*bounds.getYsize()+bounds.getZsize()*bounds.getZsize())/2;
   if(!Double.isFinite(radius)||radius<=0||radius>256||center.distanceToSqr(eye)>256*256||Math.abs(center.x)>30000000||Math.abs(center.y)>30000000||Math.abs(center.z)>30000000)return List.of();
   var hits=new ArrayList<Hit>();var budget=CollisionWorkBudget.begin(level);
-  for(var core:LoadedCoreIndex.query(level,bounds)){
+  for(var entry:candidates(level,bounds).entrySet()){
+   var core=entry.getKey();
    if(core.isControlCore()||core.isRemoved()||core.health().state()!=HeartState.ALIVE||attacker!=null&&!core.acceptsLifeAttack(attacker))continue;
-   var hit=nearest(level,core,center,eye,radius,budget,volumes,null);if(hit!=null)hits.add(hit);
+   var hit=nearest(level,core,center,eye,radius,budget,volumes,null,entry.getValue());if(hit!=null)hits.add(hit);
    if(hits.size()>=64||CollisionWorkBudget.exhausted(level))break;
   }hits.sort(Comparator.comparingDouble(Hit::distance));return List.copyOf(hits);
  }
@@ -42,9 +46,10 @@ public final class BodySphereQuery {
  public static List<Hit> queryRegion(ServerLevel level,Vec3 center,Vec3 eye,double radius,dev.sablelife.attack.AttackVolume limit){
   if(level==null||center==null||eye==null||limit==null||!limit.valid()||!Double.isFinite(center.lengthSqr())||!Double.isFinite(eye.lengthSqr())||!Double.isFinite(radius)||radius<=0||radius>256||center.distanceToSqr(eye)>256*256||Math.abs(center.x)>30000000||Math.abs(center.y)>30000000||Math.abs(center.z)>30000000)return List.of();
   var hits=new ArrayList<Hit>();var budget=CollisionWorkBudget.begin(level);
-  for(var core:LoadedCoreIndex.query(level,limit.bounds())){
+  for(var entry:candidates(level,limit.bounds()).entrySet()){
+   var core=entry.getKey();
    if(core.isControlCore()||core.isRemoved()||core.health().state()!=HeartState.ALIVE)continue;
-   var hit=nearest(level,core,center,eye,radius,budget,List.of(limit),null);if(hit!=null)hits.add(hit);
+   var hit=nearest(level,core,center,eye,radius,budget,List.of(limit),null,entry.getValue());if(hit!=null)hits.add(hit);
    if(hits.size()>=64||CollisionWorkBudget.exhausted(level))break;
   }hits.sort(Comparator.comparingDouble(Hit::distance));return List.copyOf(hits);
  }
@@ -54,15 +59,38 @@ public final class BodySphereQuery {
   if(level==null||start==null||end==null||!Double.isFinite(start.lengthSqr()+end.lengthSqr()+radius)||radius<=0||radius>4||start.distanceToSqr(end)>16.01)return List.of();
   var center=start.lerp(end,.5);double enclosing=start.distanceTo(end)/2+radius;
   var hits=new ArrayList<Hit>();var budget=CollisionWorkBudget.begin(level);var sweep=new Sweep(start,end,radius);
-  for(var core:LoadedCoreIndex.query(level,new AABB(start,end).inflate(radius))){
+  for(var entry:candidates(level,new AABB(start,end).inflate(radius)).entrySet()){
+   var core=entry.getKey();
    if(core.isControlCore()||core.isRemoved()||core.health().state()!=HeartState.ALIVE||!core.acceptsLifeAttack(attacker))continue;
-   var hit=nearest(level,core,center,start,enclosing,budget,null,sweep);if(hit!=null)hits.add(hit);
+   var hit=nearest(level,core,center,start,enclosing,budget,null,sweep,entry.getValue());if(hit!=null)hits.add(hit);
    if(hits.size()>=64||CollisionWorkBudget.exhausted(level))break;
   }return List.copyOf(hits);
  }
- private static Hit nearest(ServerLevel level,HeartBlockEntity core,Vec3 center,Vec3 eye,double radius,CollisionWorkBudget.Budget budget,java.util.List<dev.sablelife.attack.AttackVolume> volumes,Sweep sweep){
+ static Map<HeartBlockEntity, Set<SubLevel>> candidates(ServerLevel level, AABB bounds) {
+  var result = new LinkedHashMap<HeartBlockEntity, Set<SubLevel>>();
+  for (var core : LoadedCoreIndex.query(level, bounds)) result.put(core, Set.of());
+  result.putAll(WalkerLegDamage.intersecting(level, bounds));
+  return result;
+ }
+ static Collection<SubLevel> bodies(SubLevel root, Set<SubLevel> legs) {
+  var connected = SubLevelHelper.getConnectedChain(root);
+  if (legs.isEmpty()) return connected;
+  var bodies = new LinkedHashSet<>(connected);
+  bodies.addAll(legs);
+  return bodies;
+ }
+ static boolean owns(BodyOwnership ownership, HeartBlockEntity core, BlockPos block, boolean walkerLeg) {
+  var owner = ownership.owner(block);
+  return ownership.part(block) == null && (core.creatureId().equals(owner) || walkerLeg && owner == null);
+ }
+ static boolean ownsRay(ServerLevel level, BodyOwnership ownership, HeartBlockEntity core, BlockPos block, Set<SubLevel> legs) {
+  if (core.creatureId().equals(ownership.owner(block))) return true;
+  return !legs.isEmpty() && legs.contains(Sable.HELPER.getContaining(level, block)) && owns(ownership, core, block, true);
+ }
+ private static Hit nearest(ServerLevel level,HeartBlockEntity core,Vec3 center,Vec3 eye,double radius,CollisionWorkBudget.Budget budget,java.util.List<dev.sablelife.attack.AttackVolume> volumes,Sweep sweep,Set<SubLevel> legs){
   var root=Sable.HELPER.getContaining(level,core.getBlockPos());if(root==null)return null;var ownership=BodyOwnership.get(level);Hit best=null;int remaining=32768;
-  for(var body:SubLevelHelper.getConnectedChain(root)){
+  for(var body:bodies(root,legs)){
+   boolean walkerLeg=legs.contains(body);
    if(body.isRemoved())continue;var bounds=body.getPlot().getBoundingBox();if(bounds==null)continue;var pivot=body.getPlot().getCenterBlock().getCenter();var pose=body.logicalPose();var world=pose.transformPosition(pivot);
    var xAxis=pose.transformPosition(pivot.add(1,0,0)).subtract(world);var yAxis=pose.transformPosition(pivot.add(0,1,0)).subtract(world);var zAxis=pose.transformPosition(pivot.add(0,0,1)).subtract(world);
    double sx=xAxis.length(),sy=yAxis.length(),sz=zAxis.length();if(!Double.isFinite(sx+sy+sz)||Math.min(sx,Math.min(sy,sz))<1e-8)continue;
@@ -71,7 +99,7 @@ public final class BodySphereQuery {
    int y0=(int)Math.max(bounds.minY(),Math.floor(local.y-radius/sy)),y1=(int)Math.min(bounds.maxY(),Math.floor(local.y+radius/sy));
    int z0=(int)Math.max(bounds.minZ(),Math.floor(local.z-radius/sz)),z1=(int)Math.min(bounds.maxZ(),Math.floor(local.z+radius/sz));
    for(int x=x0;x<=x1;x++)for(int y=y0;y<=y1;y++)for(int z=z0;z<=z1;z++){
-    if(--remaining<0||!budget.spend(1))return best;var pos=new BlockPos(x,y,z);if(!core.creatureId().equals(ownership.owner(pos))||ownership.part(pos)!=null||!level.hasChunkAt(pos))continue;
+    if(--remaining<0||!budget.spend(1))return best;var pos=new BlockPos(x,y,z);if(!owns(ownership,core,pos,walkerLeg)||!level.hasChunkAt(pos))continue;
     var state=level.getBlockState(pos);if(state.isAir())continue;
     for(var box:state.getCollisionShape(level,pos).toAabbs()){
      if(!budget.spend(1))return best;
@@ -93,7 +121,7 @@ public final class BodySphereQuery {
      var inside=pose.transformPosition(localPoint.lerp(box.getCenter().add(x,y,z),.001));
      if(!loadedPath(level,eye,inside,budget))continue;
      var ray=level.clip(new ClipContext(eye,inside,ClipContext.Block.COLLIDER,ClipContext.Fluid.NONE,(net.minecraft.world.entity.Entity)null));
-     if(ray.getType()==HitResult.Type.MISS||ray.getBlockPos().equals(pos)||core.creatureId().equals(ownership.owner(ray.getBlockPos()))){
+     if(ray.getType()==HitResult.Type.MISS||ray.getBlockPos().equals(pos)||ownsRay(level,ownership,core,ray.getBlockPos(),legs)){
       best=new Hit(core,pos,point,distance);
      }
     }

@@ -11,6 +11,7 @@ import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.heart.HeartState;
 import dev.sablelife.module.HeartDashboardMenu;
 import dev.sablelife.module.HeartModules;
+import dev.sablelife.module.MarkOutline;
 import dev.sablelife.module.MarkingSessions;
 import dev.sablelife.module.ModuleAnchor;
 import dev.sablelife.module.ModuleMoveSet;
@@ -19,6 +20,7 @@ import dev.sablelife.module.VirtualModule;
 import dev.sablelife.sound.SoundTimelineMenu;
 import io.netty.buffer.Unpooled;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -53,6 +55,8 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 @GameTestHolder("sablelife_hitbox_tests")
 @PrefixGameTestTemplate(false)
 public final class PartBreakGameTests {
+    private static final String DOOR_BREAK_SOUND = "minecraft:entity.zombie.break_wooden_door";
+    private static final String CUSTOM_BREAK_SOUND = "minecraft:block.note_block.bass";
     private static HeartBlockEntity fixture(GameTestHelper h, boolean survival) {
         var level = h.getLevel();
         var origin = h.absolutePos(new BlockPos(4, 40, 4));
@@ -92,8 +96,19 @@ public final class PartBreakGameTests {
         var pos = core.getBlockPos();
         var player = TestActors.creative(h.getLevel());
         player.setPos(SableBodyProbe.toWorld(h.getLevel(), pos.getCenter()).add(0, 1, 0));
+        var outlines = new EnumMap<MarkOutline.Kind, MarkOutline>(MarkOutline.Kind.class);
+        player.connection = new ServerGamePacketListenerImpl(h.getLevel().getServer(), new Connection(PacketFlow.SERVERBOUND),
+                player, CommonListenerCookie.createInitial(player.getGameProfile(), false)) {
+            @Override public void send(Packet<?> packet) {
+                if (packet instanceof ClientboundCustomPayloadPacket payload && payload.payload() instanceof MarkOutline outline)
+                    outlines.put(outline.kind(), outline);
+            }
+        };
         var menu = new HeartDashboardMenu(1, player.getInventory(), core);
-        var cut = core.modules().add("part_break");
+        h.assertTrue(dashboardAction(menu, player, new ModuleNetworking.Action(1, core.modules().revision(),
+                new UUID(0, 0), "add", "part_break", 0, "")), "Could not add Part Break from the dashboard");
+        var cut = core.modules().all().getLast();
+        assertBreakSoundDefaults(h, cut);
         int revision = core.modules().revision();
         h.assertTrue(dashboardAction(menu, player, new ModuleNetworking.Action(1, revision, cut.id(), "edit",
                 "partBreakMode", 1, "")), "Could not select the part damage mode from the dashboard");
@@ -109,6 +124,13 @@ public final class PartBreakGameTests {
         h.assertTrue(dashboardAction(menu, player, watch) && MarkingSessions.select(player, watchedPos, Direction.UP)
                 && cut.watchedPart().equals(mark(core, watchedPos)) && cut.anchors().isEmpty(),
                 "The watched part should take one click independently of the break shape");
+        h.assertTrue(outlines.keySet().equals(java.util.Set.of(MarkOutline.Kind.DETAIL)),
+                "Marking the watched part should immediately show its outline on its own");
+        var previewRequest = new ModuleNetworking.Action(1, core.modules().revision(), cut.id(), "preview", "", 0, "");
+        outlines.clear();
+        h.assertTrue(dashboardAction(menu, player, previewRequest)
+                && outlines.keySet().equals(java.util.Set.of(MarkOutline.Kind.DETAIL)),
+                "Preview should be available with only a watched part marked");
         h.assertTrue(dashboardAction(menu, player, ModuleNetworking.Action.mark(1, core.modules().revision(), cut.id(), false))
                 && MarkingSessions.select(player, breakPos, Direction.UP), "Could not mark the block to break");
         if (range) {
@@ -117,6 +139,20 @@ public final class PartBreakGameTests {
         }
         h.assertTrue(HeartModules.status(cut, core).equals("valid") && cut.watchedPart().equals(mark(core, watchedPos)),
                 "Marking the blocks to break lost the watched part");
+        h.assertTrue(outlines.size() == 2 && outlines.containsKey(MarkOutline.Kind.MARK)
+                && outlines.containsKey(MarkOutline.Kind.DETAIL), "Finishing the cut selection should show both outlines");
+        outlines.clear();
+        h.assertTrue(dashboardAction(menu, player, new ModuleNetworking.Action(1, core.modules().revision(), cut.id(), "preview", "", 0, ""))
+                && outlines.size() == 2, "The preview button should show both outlines");
+        var cutOutline = outlines.get(MarkOutline.Kind.MARK);
+        var watchedOutline = outlines.get(MarkOutline.Kind.DETAIL);
+        var pose = cut.watchedPart().body(core).logicalPose();
+        double cutMin = cutOutline.endpoints().stream().mapToDouble(point -> pose.transformPositionInverse(point).x).min().orElseThrow();
+        double watchedMin = watchedOutline.endpoints().stream().mapToDouble(point -> pose.transformPositionInverse(point).x).min().orElseThrow();
+        h.assertTrue(cutOutline.endpoints().size() == 24 && watchedOutline.endpoints().size() == 24
+                && cutOutline.color() != watchedOutline.color() && Math.abs(watchedMin - pos.getX()) < 0.1
+                && Math.abs(cutMin - (range ? breakPos.getX() - 1 : breakPos.getX())) < 0.01,
+                "The watched outline should span the whole part and the cut outline only the selected blocks");
         var reloaded = VirtualModule.load(cut.save());
         h.assertTrue(reloaded.anchors().equals(cut.anchors()) && reloaded.watchedPart().equals(cut.watchedPart()),
                 "Saving and reading the module lost one of its selections");
@@ -127,13 +163,23 @@ public final class PartBreakGameTests {
         core.wireless().channel(0).set(6, 3);
         accumulation.edit("accumChannel", 1, "");
         accumulation.edit("accumThreshold", 15, "");
+        outlines.clear();
+        var accumulationPreview = new ModuleNetworking.Action(1, core.modules().revision(), accumulation.id(), "preview", "", 0, "");
+        h.assertTrue(!dashboardAction(menu, player, accumulationPreview) && outlines.isEmpty(),
+                "Whole-body damage accumulation should not preview a part");
         h.assertTrue(dashboardAction(menu, player, new ModuleNetworking.Action(1, core.modules().revision(),
                 accumulation.id(), "edit", "accumScope", 1, "")), "Could not select marked-part damage accumulation");
+        accumulationPreview = new ModuleNetworking.Action(1, core.modules().revision(), accumulation.id(), "preview", "", 0, "");
+        h.assertTrue(!dashboardAction(menu, player, accumulationPreview) && outlines.isEmpty(),
+                "Marked-part preview should wait for a mark");
         h.assertTrue(dashboardAction(menu, player, ModuleNetworking.Action.mark(1, core.modules().revision(), accumulation.id(), true))
                 && MarkingSessions.select(player, watchedPos, Direction.UP)
                 && HeartModules.status(accumulation, core).equals("valid"), "The cumulative-damage module could not mark its watched part");
+        accumulationPreview = new ModuleNetworking.Action(1, core.modules().revision(), accumulation.id(), "preview", "", 0, "");
+        h.assertTrue(dashboardAction(menu, player, accumulationPreview) && outlines.size() == 1
+                && watchedOutline.equals(outlines.get(MarkOutline.Kind.DETAIL)),
+                "Damage accumulation should show the same cyan part outline as Part Break, without a cut outline");
 
-        configureBreakSound(h, core, cut);
         activate(h, core);
         var soundPoint = SableBodyProbe.toWorld(h.getLevel(), breakPos.getCenter().lerp(
                 (range ? pos.east(2) : breakPos).getCenter(), 0.5));
@@ -147,7 +193,7 @@ public final class PartBreakGameTests {
                     && core.wireless().output(0) == 0, "The signal counter included unattributed damage or fired early");
             impact(h, watchedPos, 5);
             core.modules().tick(core);
-            assertBreakSound(h, sounds, soundPoint, cut.id());
+            assertBreakSound(h, sounds, soundPoint, cut.id(), DOOR_BREAK_SOUND);
         });
         h.assertTrue(core.health().current() == 82 && h.getLevel().getBlockState(breakPos).isAir()
                 && h.getLevel().getBlockState(pos.east(2)).isAir() == range
@@ -174,17 +220,34 @@ public final class PartBreakGameTests {
         }
     }
 
+    private static void assertBreakSoundDefaults(GameTestHelper h, VirtualModule cut) {
+        String key = "partBreakSound";
+        var rows = cut.soundTimeline(key).rows();
+        h.assertTrue(rows.size() == 1 && rows.getFirst().sound().equals(DOOR_BREAK_SOUND)
+                && dev.sablelife.sound.SoundTimeline.valid(DOOR_BREAK_SOUND), "The default door-break sound is missing");
+        var saved = cut.save();
+        h.assertTrue(VirtualModule.load(saved).soundTimeline(key).rows().equals(rows), "The default sound did not persist");
+        saved.getCompound("Settings").remove(key);
+        h.assertTrue(!VirtualModule.load(saved).hasSound(key), "An older module without a sound gained a new sound");
+        var muted = VirtualModule.load(cut.save());
+        var timeline = muted.soundTimeline(key);
+        timeline.edit("clear", new UUID(0, 0), 0, "");
+        muted.soundTimeline(key, timeline);
+        h.assertTrue(!VirtualModule.load(muted.save()).hasSound(key), "A cleared sound mix became audible after saving");
+    }
+
     private static void configureBreakSound(GameTestHelper h, HeartBlockEntity core, VirtualModule cut) {
         var player = TestActors.creative(h.getLevel());
         player.setPos(SableBodyProbe.toWorld(h.getLevel(), core.getBlockPos().getCenter()));
         var dashboard = new HeartDashboardMenu(1, player.getInventory(), core);
         String key = "partBreakSound";
-        h.assertTrue(!VirtualModule.load(cut.save()).hasSound(key), "An old Part Break module should have no default sound");
         h.assertTrue(dashboardAction(dashboard, player, new ModuleNetworking.Action(1, core.modules().revision(),
                 cut.id(), "sound_editor", key, 0, "")), "The dashboard did not open the break sound editor");
         var editor = new SoundTimelineMenu(2, player.getInventory(), core, cut.id(), key, "module");
+        h.assertTrue(editor.action(player, editor.snapshot().getInt("Revision"), "clear", new UUID(0, 0), 0, ""),
+                "The break sound editor did not clear the default mix");
         var request = roundTrip(player, new ModuleNetworking.Action(2, editor.snapshot().getInt("Revision"), new UUID(0, 0),
-                "sound_timeline", "add", 0, "minecraft:block.note_block.bass"));
+                "sound_timeline", "add", 0, CUSTOM_BREAK_SOUND));
         h.assertTrue(editor.action(player, request.revision(), request.key(), request.module(), request.value(), request.text()),
                 "The break sound editor did not save the selected sound");
         h.assertTrue(VirtualModule.load(cut.save()).soundTimeline(key).rows().equals(cut.soundTimeline(key).rows()),
@@ -202,7 +265,7 @@ public final class PartBreakGameTests {
             @Override public void send(Packet<?> packet) {
                 if (packet instanceof ClientboundCustomPayloadPacket payload
                         && payload.payload() instanceof ModuleNetworking.ModuleSound sound && !sound.stop()
-                        && sound.sound().equals("minecraft:block.note_block.bass")) sounds.add(sound);
+                        && (sound.sound().equals(DOOR_BREAK_SOUND) || sound.sound().equals(CUSTOM_BREAK_SOUND))) sounds.add(sound);
             }
         };
         level.players().add(player);
@@ -213,10 +276,10 @@ public final class PartBreakGameTests {
         }
     }
 
-    private static void assertBreakSound(GameTestHelper h, List<ModuleNetworking.ModuleSound> sounds, Vec3 point, UUID module) {
+    private static void assertBreakSound(GameTestHelper h, List<ModuleNetworking.ModuleSound> sounds, Vec3 point, UUID module, String soundId) {
         h.assertTrue(sounds.size() == 1, "A successful cut should start exactly one mix");
         var sound = sounds.getFirst();
-        h.assertTrue(sound.sound().equals("minecraft:block.note_block.bass") && sound.start() == 0
+        h.assertTrue(sound.sound().equals(soundId) && sound.start() == 0
                 && sound.position().distanceToSqr(point) < 0.000001 && !sound.module().equals(module),
                 "The sound was delayed, misplaced, or tied to the invalidated module");
     }
@@ -265,7 +328,7 @@ public final class PartBreakGameTests {
             core.wireless().programOutputs("part_break_test", Map.of(0, 15));
             core.modules().tick(core);
             core.modules().partBreak.tick(core);
-            assertBreakSound(h, sounds, soundPoint, cut.id());
+            assertBreakSound(h, sounds, soundPoint, cut.id(), CUSTOM_BREAK_SOUND);
         });
         h.assertTrue(h.getLevel().getBlockState(pos.east()).isAir() && h.getLevel().getBlockState(pos.east(2)).isAir(), "Powered cut did not erase both blocks");
         h.assertTrue(ModuleMoveSet.status(moves.get(0), core).equals("unavailable")

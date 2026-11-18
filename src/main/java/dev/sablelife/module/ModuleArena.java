@@ -26,13 +26,16 @@ public final class ModuleArena {
     }
     public void clear() { for (UUID id : List.copyOf(warnings.keySet())) cancel(id); settings.clear(); buffs.clear(); owner = null; }
     public boolean warning(UUID module) { return warnings.containsKey(module) && !warnings.get(module).isEmpty(); }
+    static long warningTicks(VirtualModule module) {
+        return (long) module.value(module.value("arenaDeath") == 1 ? "arenaPlayerDeathCountdown" : "countdown");
+    }
     public static double horizontalDistance(Vec3 a, Vec3 b) { return Math.hypot(a.x - b.x, a.z - b.z); }
     public static Vec3 corePosition(HeartBlockEntity heart) {
         var body = dev.ryanhcode.sable.Sable.HELPER.getContaining(heart.getLevel(), heart.getBlockPos());
         return body == null ? heart.getBlockPos().getCenter() : body.logicalPose().transformPosition(heart.getBlockPos().getCenter());
     }
     /** Translate the connected mechanism as a whole; preserve height and joint offsets. */
-    private static boolean returnToCenter(HeartBlockEntity heart, Vec3 center) {
+    public static boolean returnToCenter(HeartBlockEntity heart, Vec3 center) {
         var level = (ServerLevel) heart.getLevel();
         var root = dev.ryanhcode.sable.Sable.HELPER.getContaining(level, heart.getBlockPos());
         if (!(root instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel) || root.isRemoved()) return false;
@@ -59,8 +62,10 @@ public final class ModuleArena {
         owner = heart;buffs.tick(heart);
         if (!(heart.getLevel() instanceof ServerLevel level)) return;
         var active = new HashSet<UUID>();
-        for (var module : heart.modules().all()) {
-            if (!module.type().equals("arena") || !HeartModules.triggered(module, heart)) continue;
+        var inherited = dev.sablelife.ownership.ArenaRespawns.inheritedBoundary(heart);
+        var arenaModules = inherited == null ? heart.modules().all() : List.of(inherited);
+        for (var module : arenaModules) {
+            if (!module.type().equals("arena") || inherited == null && !HeartModules.triggered(module, heart)) continue;
             var boss = corePosition(heart);
             if (horizontalDistance(boss, module.arenaCenter()) <= module.value("arenaRadius")) { cancel(module.id()); continue; }
             // Immediate reset takes precedence over player punishment, including an expired warning.
@@ -72,7 +77,8 @@ public final class ModuleArena {
             active.add(module.id());
             boolean deathEnabled = module.value("arenaDeath") == 1;
             boolean returnEnabled = module.value("arenaReturn") == 1;
-            String signature = module.arenaDimension() + ":" + module.arenaCenter() + ":" + module.value("arenaRadius") + ":" + module.value("warningRange") + ":" + module.value("countdown") + ":" + returnEnabled + ":" + deathEnabled;
+            long countdownTicks = warningTicks(module);
+            String signature = module.arenaDimension() + ":" + module.arenaCenter() + ":" + module.value("arenaRadius") + ":" + module.value("warningRange") + ":" + countdownTicks + ":" + returnEnabled + ":" + deathEnabled;
             if (!signature.equals(settings.get(module.id()))) { cancel(module.id()); settings.put(module.id(), signature); }
             var pending = warnings.computeIfAbsent(module.id(), ignored -> new HashMap<>());
             var nearby = new HashSet<UUID>(); long now = level.getGameTime();
@@ -80,7 +86,7 @@ public final class ModuleArena {
                 if (!player.isAlive() || player.isCreative() || player.isSpectator()
                         || horizontalDistance(player.position(), boss) > module.value("warningRange")) continue;
                 nearby.add(player.getUUID());
-                var warning = pending.computeIfAbsent(player.getUUID(), ignored -> new Warning(now + (long) module.value("countdown")));
+                var warning = pending.computeIfAbsent(player.getUUID(), ignored -> new Warning(now + countdownTicks));
                 int seconds = (int) Math.max(0, Math.ceil((warning.deadline - now) / 20.));
                 if (seconds != warning.lastSeconds) {
                     player.connection.send(new ClientboundSetTitlesAnimationPacket(0, 25, 5));
@@ -92,7 +98,7 @@ public final class ModuleArena {
                     // Vanilla genericKill bypasses armor, resistance, normal invulnerability and totems.
                     if (deathEnabled) dev.sablelife.attack.ModuleDamage.hurt(player, dev.sablelife.attack.ModuleDamage.named(level.damageSources().genericKill(),heart), Float.MAX_VALUE);
                     if (!player.isAlive()) nearby.remove(player.getUUID());
-                    warning.deadline = now + (long) module.value("countdown"); warning.lastSeconds = -1;
+                    warning.deadline = now + countdownTicks; warning.lastSeconds = -1;
                 }
             }
             for (UUID id : List.copyOf(pending.keySet())) if (!nearby.contains(id)) {

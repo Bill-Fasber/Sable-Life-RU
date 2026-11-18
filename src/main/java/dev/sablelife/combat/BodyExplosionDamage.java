@@ -5,7 +5,7 @@ import dev.sablelife.ownership.BodyOwnership;
 import dev.sablelife.attack.ContactBox;
 import dev.sablelife.mixin.ExplosionDamageAccess;
 import dev.ryanhcode.sable.Sable;
-import dev.ryanhcode.sable.api.SubLevelHelper;
+import dev.ryanhcode.sable.sublevel.SubLevel;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.*;
@@ -41,21 +41,23 @@ public final class BodyExplosionDamage {
  private static void damageBodies(ServerLevel level, Explosion explosion, net.minecraft.world.damagesource.DamageSource source, double range, DoubleUnaryOperator damageAtDistance) {
   var center=SableBodyProbe.toWorld(level,explosion.center());if(!Double.isFinite(range)||range<=0||!Double.isFinite(center.lengthSqr()))return;
   var seen=SEEN.computeIfAbsent(explosion,e->new HashSet<>());
-  for(var core:dev.sablelife.ownership.LoadedCoreIndex.query(level,new AABB(center,center).inflate(range))){
-   if(core.isControlCore()||EntityHitboxes.blocksStructure(core)||core.health().state()!=HeartState.ALIVE||seen.contains(core.creatureId()))continue;var hit=nearestVisible(level,core,center,range);if(hit==null)continue;seen.add(core.creatureId());float amount=(float)damageAtDistance.applyAsDouble(hit.distance);if(Float.isFinite(amount)&&amount>0){if(EntityHitboxes.hybrid(core))core.modules().damageBoxes.bodyExplosion(core,source,hit.block,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH));else core.damageAt(hit.block,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH));}
+  for(var entry:BodySphereQuery.candidates(level,new AABB(center,center).inflate(range)).entrySet()){
+   var core=entry.getKey();
+   if(core.isControlCore()||EntityHitboxes.blocksStructure(core)||core.health().state()!=HeartState.ALIVE||seen.contains(core.creatureId()))continue;var hit=nearestVisible(level,core,center,range,entry.getValue());if(hit==null)continue;seen.add(core.creatureId());float amount=(float)damageAtDistance.applyAsDouble(hit.distance);if(Float.isFinite(amount)&&amount>0){if(EntityHitboxes.hybrid(core))core.modules().damageBoxes.bodyExplosion(core,source,hit.block,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH));else core.damageAt(hit.block,Math.min(amount,HeartHealth.MAX_CONFIGURED_HEALTH),source.getEntity()!=null?source.getEntity():source.getDirectEntity());}
   }
  }
- private static Hit nearestVisible(ServerLevel level,HeartBlockEntity core,Vec3 center,double range){
+ private static Hit nearestVisible(ServerLevel level,HeartBlockEntity core,Vec3 center,double range,Set<SubLevel> legs){
   var root=Sable.HELPER.getContaining(level,core.getBlockPos());if(root==null)return null;var ownership=BodyOwnership.get(level);Hit best=null;int remaining=32768;
-  for(var body:SubLevelHelper.getConnectedChain(root)){
+  for(var body:BodySphereQuery.bodies(root,legs)){
+   boolean walkerLeg=legs.contains(body);
    if(body.isRemoved())continue;var bounds=body.getPlot().getBoundingBox();if(bounds==null)continue;var pivot=body.getPlot().getCenterBlock().getCenter();var worldPivot=body.logicalPose().transformPosition(pivot);var local=pivot.add(ContactBox.rotate(new Quaterniond(body.logicalPose().orientation()).conjugate(),center.subtract(worldPivot)));
    int minX=(int)Math.max(bounds.minX(),Math.floor(local.x-range)),maxX=(int)Math.min(bounds.maxX(),Math.floor(local.x+range));int minY=(int)Math.max(bounds.minY(),Math.floor(local.y-range)),maxY=(int)Math.min(bounds.maxY(),Math.floor(local.y+range));int minZ=(int)Math.max(bounds.minZ(),Math.floor(local.z-range)),maxZ=(int)Math.min(bounds.maxZ(),Math.floor(local.z+range));
    for(int x=minX;x<=maxX;x++)for(int y=minY;y<=maxY;y++)for(int z=minZ;z<=maxZ;z++){
-    if(--remaining<0)return best;var pos=new BlockPos(x,y,z);if(!core.creatureId().equals(ownership.owner(pos))||ownership.part(pos)!=null||!level.hasChunkAt(pos))continue;var state=level.getBlockState(pos);if(state.isAir())continue;
+    if(--remaining<0)return best;var pos=new BlockPos(x,y,z);if(!BodySphereQuery.owns(ownership,core,pos,walkerLeg)||!level.hasChunkAt(pos))continue;var state=level.getBlockState(pos);if(state.isAir())continue;
     for(var box:state.getCollisionShape(level,pos).toAabbs()){
      var nearest=new Vec3(Math.clamp(local.x,x+box.minX,x+box.maxX),Math.clamp(local.y,y+box.minY,y+box.maxY),Math.clamp(local.z,z+box.minZ,z+box.maxZ));double distance=nearest.distanceTo(local);if(distance>range||best!=null&&distance>=best.distance)continue;
      var inside=nearest.lerp(box.getCenter().add(x,y,z),.001);var point=body.logicalPose().transformPosition(inside);var ray=level.clip(new ClipContext(center,point,ClipContext.Block.COLLIDER,ClipContext.Fluid.NONE,(net.minecraft.world.entity.Entity)null));
-     if(ray.getType()==HitResult.Type.MISS||ray.getBlockPos().equals(pos)||core.creatureId().equals(ownership.owner(ray.getBlockPos()))){var actual=ray.getType()==HitResult.Type.BLOCK?ray.getBlockPos():pos;if(ownership.part(actual)==null)best=new Hit(actual,distance);}
+     if(ray.getType()==HitResult.Type.MISS||ray.getBlockPos().equals(pos)||BodySphereQuery.ownsRay(level,ownership,core,ray.getBlockPos(),legs)){var actual=ray.getType()==HitResult.Type.BLOCK?ray.getBlockPos():pos;if(ownership.part(actual)==null)best=new Hit(actual,distance);}
     }
    }
   }return best;

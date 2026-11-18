@@ -9,12 +9,12 @@ import java.util.ArrayList;
 
 /** Persistent authoring settings shared by the dashboard and validated server runtime. */
 public final class VirtualModule {
-    public static final List<String> TYPES = List.of("move_set", "signal_logic", "combat_event", "health_phase", "hit_counter", "health_adjustment", "damage_accumulation", "sequence", "wireless_redstone", "command", "linear_movement", "auto_facing", "signal_turn", "gyroscope", "hover_anchor", "visual_shockwave", "distortion_trail", "sensor", "navigation", "arena", "armor", "melee", "flame", "arrow", "gun", "mortar", "homing", "laser", "sphere_blast", "slash", "ground_strike", "quake", "pull", "freeze", "grab", "pulse", "surface_field", "summoned_weapon", "particles", "health_bar", "item_display", "trigger_sound", "sound", "bgm", "loot", "blueprint_spawn", "entity_hitbox", "block_interaction", "part_break");
+    public static final List<String> TYPES = List.of("move_set", "signal_logic", "combat_event", "health_phase", "hit_counter", "health_adjustment", "damage_accumulation", "sequence", "wireless_redstone", "command", "linear_movement", "auto_facing", "signal_turn", "gyroscope", "hover_anchor", "visual_shockwave", "distortion_trail", "sensor", "navigation", "arena", "armor", "melee", "flame", "arrow", "gun", "mortar", "homing", "laser", "sphere_blast", "slash", "ground_strike", "quake", "pull", "freeze", "grab", "pulse", "surface_field", "summoned_weapon", "particles", "health_bar", "item_display", "trigger_sound", "sound", "bgm", "loot", "blueprint_spawn", "entity_hitbox", "block_interaction", "part_break", "message_display", "propulsion", "motion_damping");
     /** New-module catalog grouped by sidebar color: signal, weapon, function. */
     public static final List<String> AVAILABLE_TYPES = List.of(
             "move_set", "signal_logic", "combat_event", "health_phase", "hit_counter", "damage_accumulation", "sequence", "wireless_redstone", "command", "sensor", "navigation",
             "melee", "flame", "arrow", "gun", "mortar", "homing", "laser", "sphere_blast", "slash", "ground_strike", "quake", "pull", "freeze", "grab", "pulse", "surface_field", "summoned_weapon",
-            "arena", "armor", "health_adjustment", "linear_movement", "auto_facing", "signal_turn", "gyroscope", "hover_anchor", "visual_shockwave", "distortion_trail", "particles", "health_bar", "item_display", "trigger_sound", "sound", "bgm", "loot", "blueprint_spawn", "entity_hitbox", "block_interaction", "part_break");
+            "arena", "armor", "health_adjustment", "linear_movement", "auto_facing", "signal_turn", "gyroscope", "hover_anchor", "visual_shockwave", "distortion_trail", "particles", "health_bar", "item_display", "trigger_sound", "sound", "bgm", "loot", "blueprint_spawn", "entity_hitbox", "block_interaction", "part_break", "message_display", "propulsion", "motion_damping");
     public record Emitter(net.minecraft.world.phys.Vec3 position,net.minecraft.world.phys.Vec3 direction,org.joml.Quaterniond rotation,UUID audioOwner){}
     private Emitter emitter;
     public Emitter emitter(){return emitter;}
@@ -33,6 +33,11 @@ public final class VirtualModule {
     public ArmorRules armorRules(){return armorRules;}
     private final CommandProgram commands = new CommandProgram();
     public CommandProgram commands() { return commands; }
+    private MessageProgram messages;
+    public MessageProgram messages() {
+        if (messages == null) messages = new MessageProgram();
+        return messages;
+    }
     private final MoveSet moveSet = new MoveSet();
     public MoveSet moveSet() { return moveSet; }
     private final List<PulseSequence.Step> sequence = new ArrayList<>();
@@ -66,11 +71,15 @@ public final class VirtualModule {
     private String arenaDimension = "";
     public net.minecraft.world.phys.Vec3 arenaCenter() { return arenaCenter; }
     public String arenaDimension() { return arenaDimension; }
+    public boolean supportsFixedPoint() {
+        return type.equals("arena") || type.equals("blueprint_spawn") || type.equals("linear_movement");
+    }
     public void arenaCenter(net.minecraft.world.phys.Vec3 point, String dimension) {
-        if (!List.of("arena","blueprint_spawn").contains(type) || !Double.isFinite(point.x) || !Double.isFinite(point.y) || !Double.isFinite(point.z)
+        if (!supportsFixedPoint() || !Double.isFinite(point.x) || !Double.isFinite(point.y) || !Double.isFinite(point.z)
                 || Math.abs(point.x) > 30000000 || Math.abs(point.z) > 30000000 || Math.abs(point.y) > 30000000
                 || net.minecraft.resources.ResourceLocation.tryParse(dimension) == null) return;
-        arenaCenter = point; arenaDimension = dimension; invalidated = detached = false;
+        arenaCenter = point; arenaDimension = dimension;
+        if (!type.equals("linear_movement")) invalidated = detached = false;
     }
     private final UUID id;
     private final String type;
@@ -104,7 +113,7 @@ public final class VirtualModule {
     public boolean coreModule() {
         var addon = ModuleTypes.find(type);
         if (addon != null) return addon.markMode() == dev.sablelife.api.module.ModuleDefinition.MarkMode.NONE;
-        return SignalRules.supported(type)||type.equals("surface_field")||type.equals("armor")&&value("armorWholeBody")==1||List.of("bgm", "health_phase", "hit_counter", "health_adjustment", "damage_accumulation", "sequence", "move_set", "command").contains(type);
+        return SignalRules.supported(type)||type.equals("surface_field")||type.equals("armor")&&value("armorWholeBody")==1||List.of("bgm", "health_phase", "hit_counter", "health_adjustment", "damage_accumulation", "sequence", "move_set", "command", "message_display").contains(type);
     }
     public boolean area() {
         var addon = ModuleTypes.find(type);
@@ -171,15 +180,20 @@ public final class VirtualModule {
     private int trigger, channel;
     private final List<ModuleAnchor> particlePointAnchors = new ArrayList<>();
     private final List<ModuleAnchor> anchors = new ArrayList<>();
+    private long invalidRedstoneFaces;
     private CompoundTag unknown;
-    public VirtualModule(String type) { this(UUID.randomUUID(), type); }
+    public VirtualModule(String type) {
+        this(UUID.randomUUID(), type);
+        if (type.equals("part_break")) settings.putString(ModulePartBreak.SOUND, "minecraft:entity.zombie.break_wooden_door");
+    }
     private VirtualModule(UUID id, String type) {
         if(type.equals("health_phase"))healthPhaseRules.add();
         this.id = id; this.type = type;
         if(SignalRules.supported(type))signalRules().add();
         for(var f:ModuleFields.HURT_FIELDS) settings.putDouble(f.key(),f.initial());
         if (!DatapackModules.isDatapackType(type)) ModuleFields.forType(type).forEach(f -> {
-            if(f.choices().equals(List.of("library")))settings.putString(f.key(), "");
+            if (ArenaBattleTitle.isTemplate(f.key())) return;
+            if (ModuleFields.arenaAnnouncement(f.key()) || f.choices().equals(List.of("library"))) settings.putString(f.key(), "");
             else settings.putDouble(f.key(), f.initial());
         });
         if(type.equals("mortar")||type.equals("ground_strike")){var child=new VirtualModule("particles");child.editParticle("add","minecraft:explosion");movementParticles.put("Impact",child);}
@@ -241,7 +255,7 @@ public final class VirtualModule {
     }
     public boolean known() { return unknown == null && supportsType(type); }
     private boolean commandApprovalRequired;
-    public boolean commandApprovalRequired() { return type.equals("command") && commandApprovalRequired; }
+    public boolean commandApprovalRequired() { return AuthoringLimits.requiresOperator(type) && commandApprovalRequired; }
     public void approveCommands() { commandApprovalRequired = false; }
     public record StoredAnchor(String group, int index, ModuleAnchor anchor) {}
     /** Both particle mark sets are persistent, even when only one set is currently selected. */
@@ -265,8 +279,56 @@ public final class VirtualModule {
     private List<ModuleAnchor> activeAnchors() { return type.equals("particles") && !area() ? particlePointAnchors : anchors; }
     public List<ModuleAnchor> anchors() { return List.copyOf(activeAnchors()); }
     public void clearMarks() { anchors(List.of()); arenaCenter=null; arenaDimension=""; }
-    public void clearFixedPoint(){if(List.of("arena","blueprint_spawn").contains(type)){arenaCenter=null;arenaDimension="";invalidated=false;detached=false;}}
-    public void anchors(List<ModuleAnchor> values) { if (type.equals("gyroscope") && !anchors().equals(values)) gyroDown = null; var active = activeAnchors(); active.clear(); active.addAll(values); invalidated = false; detached = false; }
+    public void clearFixedPoint(){
+        if (!supportsFixedPoint()) return;
+        arenaCenter = null; arenaDimension = "";
+        if (!type.equals("linear_movement")) invalidated = detached = false;
+    }
+    public void anchors(List<ModuleAnchor> values) {
+        if (type.equals("gyroscope") && !anchors().equals(values)) gyroDown = null;
+        var active = activeAnchors();
+        active.clear();
+        active.addAll(type.equals("wireless_redstone") && values.size() > ModuleRedstone.MAX_OUTPUT_FACES
+                ? values.subList(0, ModuleRedstone.MAX_OUTPUT_FACES) : values);
+        invalidated = detached = false;
+        invalidRedstoneFaces = 0L;
+    }
+    public int redstoneFaceCount() { return type.equals("wireless_redstone") ? anchors.size() : 0; }
+    ModuleAnchor redstoneFace(int index) { return anchors.get(index); }
+    public boolean redstoneFaceInvalid(int index) { return invalidated || detached || (invalidRedstoneFaces & (1L << index)) != 0; }
+    String redstoneFaceStatus(int index, dev.sablelife.heart.HeartBlockEntity heart) {
+        if (detached) return "disconnected";
+        return redstoneFaceInvalid(index) ? "destroyed" : redstoneFace(index).status(heart);
+    }
+    boolean invalidateRedstoneFace(int index) {
+        if (redstoneFaceInvalid(index)) return false;
+        invalidRedstoneFaces |= 1L << index;
+        return true;
+    }
+    private void preserveInvalidRedstoneFaces() {
+        if (invalidated || detached)
+            invalidRedstoneFaces = anchors.size() == Long.SIZE ? -1L : (1L << anchors.size()) - 1;
+        invalidated = detached = false;
+    }
+    boolean setRedstoneFace(int index, ModuleAnchor anchor) {
+        if (!ModuleRedstone.validIndex(this, index, true)) return false;
+        for (int i = 0; i < anchors.size(); i++) {
+            if (i != index && anchors.get(i).equals(anchor) && !redstoneFaceInvalid(i)) return false;
+        }
+        preserveInvalidRedstoneFaces();
+        if (index == anchors.size()) anchors.add(anchor);
+        else anchors.set(index, anchor);
+        invalidRedstoneFaces &= ~(1L << index);
+        return true;
+    }
+    boolean removeRedstoneFace(int index) {
+        if (!ModuleRedstone.validIndex(this, index, false)) return false;
+        preserveInvalidRedstoneFaces();
+        anchors.remove(index);
+        long lower = (1L << index) - 1;
+        invalidRedstoneFaces = (invalidRedstoneFaces & lower) | ((invalidRedstoneFaces >>> 1) & ~lower);
+        return true;
+    }
     public CompoundTag lootSamples() { return lootSamples.copy(); }
     public void lootSamples(CompoundTag tag) { lootSamples = tag.copy(); importData.putBoolean("TableMode", false); }
     void importSound(String key, String value) { settings.putString(key, value); }
@@ -294,7 +356,7 @@ public final class VirtualModule {
         else {var frequencies=new CompoundTag();for(var key:List.of("Red","Blue"))if(redBlue.contains(key))frequencies.put(key,redBlue.get(key).copy());redBlue=frequencies;}
         if(!type.equals("loot"))lootSamples=new CompoundTag();
         else {var samples=new CompoundTag();for(int i=0;i<27;i++)for(var prefix:List.of("Slot","Chance","Weight")){var key=prefix+i;if(lootSamples.contains(key))samples.put(key,lootSamples.get(key).copy());}lootSamples=samples;}
-        impactField(null);summonAttack(null);
+        impactField(null);summonAttack(null);facingSensor(null);
         if(type.equals("hit_counter")){settings.putDouble("hitChannel",0);hitSource(null,0);}
         if(type.equals("wireless_redstone"))settings.putDouble("redstoneChannel",0);
         arenaBuffs.unbind();armorRules.unbind();healthPhaseRules.unbind();
@@ -305,6 +367,12 @@ public final class VirtualModule {
     public void impactField(UUID id){if(id==null)settings.remove("ImpactFieldId");else settings.putUUID("ImpactFieldId",id);}
     public UUID hitSourceId(){return settings.hasUUID("HitSourceId")?settings.getUUID("HitSourceId"):null;}
     public void hitSource(UUID id,int index){if(id==null)settings.remove("HitSourceId");else settings.putUUID("HitSourceId",id);settings.putDouble("hitSource",index);}
+    public UUID facingSensorId() { return settings.hasUUID("FacingSensorId") ? settings.getUUID("FacingSensorId") : null; }
+    public void facingSensor(UUID id) {
+        if (id == null) settings.remove("FacingSensorId");
+        else settings.putUUID("FacingSensorId", id);
+    }
+    public boolean hasText(String key) { return settings.contains(key, Tag.TAG_STRING); }
     public String text(String key) { return settings.getString(key); }
     /** Preserve the referenced signal when rows shift; a deleted reference stays unbound. */
     public boolean wirelessChannelDeleted(int index) {
@@ -355,7 +423,7 @@ public final class VirtualModule {
                 return edit("redstoneRampStart",from,"")&&edit("redstoneRampEnd",to,"");
             }catch(NumberFormatException invalid){return false;}
         }
-        if(type.equals("armor")&&key.equals("armorWholeBody")&&value!=Math.rint(value))return false;
+        if(type.equals("armor")&&(key.equals("armorWholeBody")||key.equals("armorProjectileOnly"))&&value!=Math.rint(value))return false;
         if(type.equals("armor")&&List.of("damageModifier","reduction","armorWhen").contains(key))return false;
         if(type.equals("slash")&&List.of("slashRed","slashGreen","slashBlue").contains(key)){edit("slashColorRgb",1,"");key="slashColor"+key.substring(5);}
         switch (key) {
@@ -368,6 +436,12 @@ public final class VirtualModule {
             case "channel" -> { if (type.equals("loot") || trigger < 2) return false; channel = Math.clamp((int) value, 1, dev.sablelife.heart.HeartWireless.CHANNELS) - 1; }
             default -> {
                 var field = ModuleFields.find(type, key); if (field == null) return false;
+                if (ModuleFields.arenaText(key)) {
+                    if (text.length() > ModuleFields.ARENA_ANNOUNCEMENT_LENGTH
+                            || text.codePoints().anyMatch(Character::isISOControl)) return false;
+                    settings.putString(key, text.strip());
+                    return true;
+                }
                 if (key.equals("effect")) importData.remove("LegacyEffect");
                 if (field.choices().equals(List.of("library"))) {
                     if (!dev.sablelife.sound.SoundLibrary.contains(text)) return false;
@@ -391,9 +465,26 @@ public final class VirtualModule {
         }
         return true;
     }
+    CompoundTag dashboardHeader() {
+        var tag = new CompoundTag();
+        if (unknown != null) tag.putInt("Version", unknown.getInt("Version"));
+        tag.putUUID("Id", id);
+        tag.putString("Type", type);
+        tag.putString("Group", group);
+        tag.putString("Name", unknown == null ? name : unknown.getString("Name"));
+        tag.putBoolean("Enabled", enabled);
+        return tag;
+    }
+
     public CompoundTag save() {
         if (unknown != null) return unknown.copy();
-        var tag = new CompoundTag(); tag.putInt("ColorControlsVersion",1);tag.putInt("Version", 1); tag.putUUID("Id", id); tag.putString("Type", type);
+        var tag = dashboardHeader();
+        tag.putInt("ColorControlsVersion", 1);
+        tag.putInt("Version", 1);
+        tag.putBoolean("Invalidated", invalidated);
+        tag.putBoolean("Detached", detached);
+        tag.putInt("Trigger", trigger);
+        tag.putInt("Channel", channel);
         if (type.equals("gyroscope") && gyroDown != null) { var down = new CompoundTag(); down.putDouble("X",gyroDown.x); down.putDouble("Y",gyroDown.y); down.putDouble("Z",gyroDown.z); tag.put("GyroDown",down); }
         if(type.equals("health_phase"))tag.put("HealthPhaseRules",healthPhaseRules.save());
         if(SignalRules.supported(type))tag.put("SignalRules",signalRules().save());
@@ -405,12 +496,10 @@ public final class VirtualModule {
         }
         if (type.equals("move_set")) tag.put("Moves", moveSet.save());
         if (type.equals("command")) tag.put("Commands", commands.save());
+        if (type.equals("message_display")) tag.put("Messages", messages().save());
         if (commandApprovalRequired) tag.putBoolean("CommandApprovalRequired", true);
         if(!movementParticles.isEmpty()){var stages=new CompoundTag();movementParticles.forEach((stage,selection)->stages.put(stage,selection.save()));tag.put("MovementParticles",stages);}
         if (type.equals("homing")) tag.putInt("HomingFormationVersion", 4);
-        tag.putString("Group",group);tag.putString("Name", name); tag.putBoolean("Enabled", enabled);
-        tag.putBoolean("Invalidated", invalidated);
-        tag.putBoolean("Detached", detached);
         if (rewardOwner != null) tag.putUUID("RewardOwner", rewardOwner);
         tag.put("SoundTimelines",soundTimelines.copy());
         tag.put("RedBlue",redBlue.copy());
@@ -420,9 +509,16 @@ public final class VirtualModule {
         for (var step : sequence) { var row = new CompoundTag(); row.putBoolean("Wait", step.waiting()); row.putInt("Channel", step.channel()); row.putInt("Power", step.power()); row.putInt("Ticks", step.ticks()); steps.add(row); }
         if (!steps.isEmpty()) tag.put("Sequence", steps);
         tag.put("ImportData", importData.copy()); if (source != null) tag.put("ImportSource", source.save());
-        tag.putInt("Trigger", trigger); tag.putInt("Channel", channel);
         if (watchedPart != null) { var part = new ListTag(); part.add(watchedPart.save()); tag.put("WatchedPart", part); }
-        var list = new ListTag(); anchors().forEach(a -> list.add(a.save())); tag.put("Anchors", list);
+        var list = new ListTag();
+        var active = activeAnchors();
+        for (int i = 0; i < active.size(); i++) {
+            var mark = active.get(i).save();
+            if (type.equals("wireless_redstone") && (invalidRedstoneFaces & (1L << i)) != 0)
+                mark.putBoolean("Invalidated", true);
+            list.add(mark);
+        }
+        tag.put("Anchors", list);
         if (type.equals("particles")) {
             var areaMarks = new ListTag(); anchors.forEach(a -> areaMarks.add(a.save())); tag.put("ParticleAreaAnchors", areaMarks);
             var pointMarks = new ListTag(); particlePointAnchors.forEach(a -> pointMarks.add(a.save())); tag.put("ParticlePointAnchors", pointMarks);
@@ -448,9 +544,13 @@ public final class VirtualModule {
         }
         if(SignalRules.supported(module.type)&&tag.contains("SignalRules"))module.signalRules().load(tag.getList("SignalRules",10));
         var saved = tag.getCompound("Settings");
+        // Older attack modules either had no sight check or defaulted to Off.
+        if (ModuleFields.legacyAttackSightOff(module.type) && !saved.contains("lineOfSight", 99))
+            module.settings.putDouble("lineOfSight", 0);
         if(ModuleSurfaceField.impactAttack(module)&&saved.hasUUID("ImpactFieldId"))module.impactField(saved.getUUID("ImpactFieldId"));
         if(module.type.equals("summoned_weapon")&&saved.hasUUID("SummonAttackId"))module.summonAttack(saved.getUUID("SummonAttackId"));
         if(module.type.equals("hit_counter")&&saved.hasUUID("HitSourceId"))module.settings.putUUID("HitSourceId",saved.getUUID("HitSourceId"));
+        if (module.type.equals("auto_facing") && saved.hasUUID("FacingSensorId")) module.facingSensor(saved.getUUID("FacingSensorId"));
         if(module.type.equals("health_phase")){
             if(tag.contains("HealthPhaseRules",9))module.healthPhaseRules.load(tag.getList("HealthPhaseRules",10));
             else for(var key:HealthPhaseRules.FIELDS)if(saved.contains(key))module.edit(key,saved.getDouble(key),"");
@@ -464,9 +564,16 @@ public final class VirtualModule {
             }
         }
         if (!datapack) for (var field : ModuleFields.forType(module.type)) if (saved.contains(field.key())) {
+            if (ArenaBattleTitle.isTemplate(field.key()) && !saved.contains(field.key(), Tag.TAG_STRING)) continue;
             if (field.choices().equals(List.of("library"))) module.settings.putString(field.key(), saved.getString(field.key()));
-            else module.edit(field.key(), saved.getDouble(field.key()), "");
+            else module.edit(field.key(), saved.getDouble(field.key()), ModuleFields.arenaText(field.key()) ? saved.getString(field.key()) : "");
         }
+        // Older Arena modules shared one countdown between lethal and nonlethal warnings.
+        if (module.type.equals("arena") && !saved.contains("arenaPlayerDeathCountdown"))
+            module.edit("arenaPlayerDeathCountdown", module.value("countdown"), "");
+        // Legacy blueprint modules defaulted to placing their core dormant.
+        if (module.type.equals("blueprint_spawn") && !saved.contains("spawnActivate"))
+            module.edit("spawnActivate", 0, "");
         if(module.type.equals("slash")&&tag.getInt("ColorControlsVersion")==0&&saved.contains("slashRed")){module.settings.putDouble("slashColorRgb",1);module.settings.putDouble("slashColorRgbSet",1);for(var channel:List.of("Red","Green","Blue"))module.settings.putDouble("slashColor"+channel,Math.clamp(Math.round(saved.getDouble("slash"+channel)),0,255));}
         for (var field : ModuleFields.forType(module.type)) if (field.choices().equals(List.of("library")) && saved.contains(field.key() + "Last")) module.settings.putString(field.key() + "Last", saved.getString(field.key() + "Last"));
         if (module.type.equals("homing")) {
@@ -494,6 +601,7 @@ public final class VirtualModule {
         }
         if (module.type.equals("move_set")) module.moveSet.load(tag.getList("Moves", 10));
         if (module.type.equals("command")) module.commands.load(tag.getList("Commands", 10));
+        if (module.type.equals("message_display")) module.messages().load(tag.getCompound("Messages"));
         if(!module.movementParticles.isEmpty()){
             var stages=tag.getCompound("MovementParticles");
             module.movementParticles.replaceAll((stage, selection) -> {
@@ -535,8 +643,15 @@ public final class VirtualModule {
         else module.edit("trigger", tag.getInt("Trigger"), "");
         module.channel = Math.clamp(tag.getInt("Channel"), -1, dev.sablelife.heart.HeartWireless.CHANNELS - 1);
         var list = tag.getList("Anchors", 10);
-        for (int i = 0; i < Math.min(2, list.size()); i++) {
-            var anchor = ModuleAnchor.load(list.getCompound(i)); if (anchor != null) module.activeAnchors().add(anchor);
+        int markLimit = module.type.equals("wireless_redstone") ? ModuleRedstone.MAX_OUTPUT_FACES : 2;
+        for (int i = 0; i < Math.min(markLimit, list.size()); i++) {
+            var mark = list.getCompound(i);
+            var anchor = ModuleAnchor.load(mark);
+            if (anchor == null) continue;
+            var active = module.activeAnchors();
+            if (module.type.equals("wireless_redstone") && mark.getBoolean("Invalidated"))
+                module.invalidRedstoneFaces |= 1L << active.size();
+            active.add(anchor);
         }
         if (module.type.equals("particles") && tag.contains("ParticleAreaAnchors")) {
             module.anchors.clear(); module.particlePointAnchors.clear();

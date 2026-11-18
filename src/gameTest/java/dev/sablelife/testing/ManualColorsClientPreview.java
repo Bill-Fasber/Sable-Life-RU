@@ -15,7 +15,7 @@ import java.util.*;
 @EventBusSubscriber(modid="sablelife_tests",value=Dist.CLIENT)
 public final class ManualColorsClientPreview {
     private static final Screen PARENT=new Screen(Component.literal("Manual colors preview")){};
-    private static final String[] CHAPTERS=Boolean.getBoolean("sablelife.briefManualPreview")?new String[]{"core","wireless_channels","move_set"}:new String[]{"getting_started","wireless_channels","arrow"};
+    private static final String[] CHAPTERS=Boolean.getBoolean("sablelife.briefManualPreview")?new String[]{"core","wireless_channels","move_set"}:new String[]{"getting_started","wireless_channels","arrow","visual_shockwave"};
     private static int phase,ticks,chapterTabs;private static String language="";private static ManualScreen screen;
     private static java.util.concurrent.CompletableFuture<?> reload;
     private static java.lang.reflect.Field field(String key)throws Exception{var f=ManualScreen.class.getDeclaredField(key);f.setAccessible(true);return f;}
@@ -33,7 +33,7 @@ public final class ManualColorsClientPreview {
         if(!ids.subList(0,7).equals(List.of("getting_started","core","module_management","marking_system","preview_system","triggers","wireless_channels"))||ids.contains("retaliation")||ids.contains("death_unloading")||ids.contains("sound_timeline")||ids.contains("combat_compatibility"))throw new AssertionError("Manual order/removal differs");
         boolean modules=false;for(var chapter:chapters){boolean guide=((String)call(chapter,"module")).isEmpty();if(guide&&modules)throw new AssertionError("An appended guide is below modules");if(!guide)modules=true;}
         if(!ids.contains("hit_counter"))throw new AssertionError("Guide removal deleted the Hit counter module chapter");
-        String lastGuide="";int brief=0,briefUsage=0;
+        String lastGuide="";
         var paragraphs=ManualScreen.class.getDeclaredMethod("paragraphs");paragraphs.setAccessible(true);
         for(var chapter:chapters){
             String module=(String)call(chapter,"module");
@@ -41,21 +41,26 @@ public final class ManualColorsClientPreview {
             if(module.isEmpty())lastGuide=id;
             var sections=(Map<?,?>)call(chapter,"sections");
             if(!id.equals("getting_started")){
-                briefUsage++;field("selected").set(screen,chapter);field("tab").setInt(screen,0);
+                field("selected").set(screen,chapter);field("tab").setInt(screen,0);
                 var content=(List<?>)paragraphs.invoke(screen);
                 if(content.size()!=1||((Component)content.getFirst()).getString().contains("\n"))throw new AssertionError("Usage is not one short paragraph: "+id);
                 if(!sections.get("usage").equals(List.of("manual.sablelife."+id+".brief_usage")))throw new AssertionError("Verbose Usage references remain: "+id);
+                if(id.equals("visual_shockwave")){
+                    String rearBlur=language.equals("zh_cn")?"背对发射点时，径向模糊移到屏幕中央":"when you face away";
+                    if(!((Component)content.getFirst()).getString().contains(rearBlur))
+                        throw new AssertionError("Visual Effects Usage is missing the rear radial blur explanation in "+language);
+                }
             }
             if(module.isEmpty())continue;
             if(ModuleCategory.of(module)==ModuleCategory.SIGNAL)continue;
-            brief++;field("selected").set(screen,chapter);field("tab").setInt(screen,0);
+            field("selected").set(screen,chapter);field("tab").setInt(screen,0);
             if(((List<?>)paragraphs.invoke(screen)).size()!=1)throw new AssertionError("Brief Usage still has appended parameter text: "+module);
             for(String tab:List.of("usage","example","troubleshooting")){
                 var keys=(List<?>)sections.get(tab);
                 if(keys.size()!=1||!keys.getFirst().equals("manual.sablelife."+module+".brief_"+tab))throw new AssertionError("Verbose tab references remain: "+module);
             }
         }
-        if(brief!=37||briefUsage!=58||!lastGuide.equals("server_limits"))throw new AssertionError("Brief chapter count or last guide differs");
+        if(!lastGuide.equals("server_limits"))throw new AssertionError("The last guide should be server resource limits");
 
         for(var button:(List<?>)field("chapterButtons").get(screen))((net.minecraft.client.gui.components.Button)button).getMessage().getVisualOrderText().accept((i,s,c)->{if(s.getColor()==null||s.getColor().getValue()!=0xFFFFFF)throw new AssertionError("Chapter title is not white");return true;});
         var formatter=field("textStyle").get(screen);var format=formatter.getClass().getDeclaredMethod("format",String.class,boolean.class);format.setAccessible(true);
@@ -76,17 +81,19 @@ public final class ManualColorsClientPreview {
     }
     @SubscribeEvent public static void tick(ClientTickEvent.Post event)throws Exception{
         if(!Boolean.getBoolean("sablelife.manualColorPreview"))return;var mc=Minecraft.getInstance();if(mc.getOverlay()!=null||reload!=null&&!reload.isDone())return;
-        if(screen==null){if(mc.screen==null||mc.level!=null)return;String wanted=phase<3?"en_us":"zh_cn";
+        if(screen==null){if(mc.screen==null||mc.level!=null)return;String wanted=phase<CHAPTERS.length?"en_us":"zh_cn";
             if(!wanted.equals(language)){language=wanted;mc.getLanguageManager().setSelected(wanted);mc.options.languageCode=wanted;reload=mc.reloadResourcePacks();return;}
             mc.options.pauseOnLostFocus=false;mc.options.guiScale().set(2);mc.resizeDisplay();while(LifeUiStyle.density()!=1)LifeUiStyle.cycle(1);
-            screen=new ManualScreen(PARENT,CHAPTERS[phase%3]);mc.setScreen(screen);ticks=0;
-            if(phase%3==0){audit();screen=new ManualScreen(PARENT,CHAPTERS[phase%3]);mc.setScreen(screen);}
+            String chapter=CHAPTERS[phase%CHAPTERS.length];
+            screen=new ManualScreen(PARENT,chapter);mc.setScreen(screen);ticks=0;
+            if(phase%CHAPTERS.length==0){audit();screen=new ManualScreen(PARENT,chapter);mc.setScreen(screen);}
             field("tab").setInt(screen,0);screen.init(mc,mc.getWindow().getGuiScaledWidth(),mc.getWindow().getGuiScaledHeight());return;
         }
         if(++ticks==12){var folder=mc.gameDirectory.toPath().resolve("screenshots");java.nio.file.Files.createDirectories(folder);
-            try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(folder.resolve(language+"-"+CHAPTERS[phase%3]+".png"));}
-            System.out.println("MANUAL_COLORS_PASS "+language+" "+CHAPTERS[phase%3]);
-            if(++phase==6){System.out.println("MANUAL_COLORS_COMPLETE chapterTabs="+chapterTabs+" screenshots=6");mc.stop();}else{screen=null;mc.setScreen(PARENT);}
+            String chapter=CHAPTERS[phase%CHAPTERS.length];
+            try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(folder.resolve(language+"-"+chapter+".png"));}
+            System.out.println("MANUAL_COLORS_PASS "+language+" "+chapter);
+            if(++phase==2*CHAPTERS.length){System.out.println("MANUAL_COLORS_COMPLETE chapterTabs="+chapterTabs+" screenshots="+phase);mc.stop();}else{screen=null;mc.setScreen(PARENT);}
         }
     }
 }

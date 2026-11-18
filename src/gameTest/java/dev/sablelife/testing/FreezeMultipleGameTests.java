@@ -7,7 +7,7 @@ import net.neoforged.neoforge.gametest.*;
 import java.util.*;
 @GameTestHolder("sablelife_freeze_tests") @PrefixGameTestTemplate(false)
 public final class FreezeMultipleGameTests {
-    @GameTest(template="combat",timeoutTicks=35) public static void MultipleOriginsFreezeBothMobsWithOneWarningClock(GameTestHelper h){
+    @GameTest(template="combat",batch="freeze_multiple_origin_isolation",timeoutTicks=35) public static void MultipleOriginsFreezeBothMobsWithOneWarningClock(GameTestHelper h){
         var c=SlashGuardGameTests.core(h);var m=c.modules().add("freeze");m.edit("freezeTarget",1,"");m.edit("releasePosition",1,"");m.edit("freezeRadius",.75,"");m.edit("freezeWarning",5,"");m.edit("freezeDuration",10,"");m.edit("interval",400,"");var o=TargetCastOrigin.searchOrigin(c,m);
         var a=EntityType.PIG.create(h.getLevel());a.setPos(o.add(5,4,0));a.setNoAi(true);a.setNoGravity(true);h.getLevel().addFreshEntity(a);var b=EntityType.PIG.create(h.getLevel());b.setPos(o.add(-6,4,0));b.setNoAi(true);b.setNoGravity(true);h.getLevel().addFreshEntity(b);
         h.assertTrue(m.value("targetMultiple")==0&&TargetCastOrigin.points(c,m).size()==1,"Single-target default changed");m.edit("targetMultiple",1,"");h.assertTrue(TargetCastOrigin.points(c,m).size()==2&&VirtualModule.load(m.save()).value("targetMultiple")==1&&ModulePreset.create(m.save()).value("targetMultiple")==1,"Multiple origins or save/preset failed");c.tryActivate(TestActors.creative(h.getLevel()));c.modules().tick(c);

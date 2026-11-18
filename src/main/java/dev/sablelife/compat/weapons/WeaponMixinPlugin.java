@@ -11,6 +11,9 @@ public final class WeaponMixinPlugin implements IMixinConfigPlugin {
     public String getRefMapperConfig(){return null;}
     public boolean shouldApplyMixin(String target,String mixin){
         if(mixin.startsWith("dev.sablelife.mixin.Ntgl")&&!hasVersion("ntgl","3.2.0"))return false;
+        if (mixin.endsWith(".TaczBreachingDamageMixin")
+                && (!(hasVersion("tacz", "1.2.0") || hasVersion("tacz", "1.1.8-hotfix-r7"))
+                || !(hasVersion("tacz_tactical_breaching", "1.0.5") || hasVersion("tacz_tactical_breaching", "1.0.7")))) return false;
         if(mixin.endsWith(".CgsBlazeProjectileMixin")&&(!hasVersion("ntgl","3.2.0")||!hasVersion("cgs","1.4.9")
                 ||!WeaponMixinContract.inspect("NtglProjectileMixin","com.nukateam.ntgl.common.foundation.entity.ProjectileEntity",
                         WeaponMixinPlugin::bytes).compatible()))return false;

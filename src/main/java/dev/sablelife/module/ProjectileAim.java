@@ -11,11 +11,17 @@ public final class ProjectileAim {
     public static List<Vec3> directions(HeartBlockEntity heart,VirtualModule m,Vec3 origin){
         if(m.value("shotAim")==0)return List.of(ModuleCombat.direction(heart,m));
         var level=(ServerLevel)heart.getLevel();double range=m.value("targetRange");
-        return ModuleTargets.query(level,heart.creatureId(),new AABB(origin,origin).inflate(range),e->ModuleTargets.matches(e,m)).stream()
-            .filter(e->{double distance=SableBodyProbe.toWorld(level,e.getBoundingBox().getCenter()).distanceToSqr(origin);return distance>1e-8&&distance<=range*range&&ModuleTargets.visible(level,heart.creatureId(),origin,e);})
-            .sorted(ModuleTargets.comparator(heart,e->SableBodyProbe.toWorld(level,e.getBoundingBox().getCenter()).distanceToSqr(origin)))
-            .limit(m.value("targetMultiple")==1?64:1)
-            .map(e->SableBodyProbe.toWorld(level,e.getBoundingBox().getCenter()).subtract(origin).normalize()).toList();
+        java.util.function.ToDoubleFunction<net.minecraft.world.entity.LivingEntity> distance = e ->
+                SableBodyProbe.toWorld(level, e.getBoundingBox().getCenter()).distanceToSqr(origin);
+        return ModuleTargets.aimedTargets(level, heart, new AABB(origin, origin).inflate(range),
+                e -> {
+                    if (!ModuleTargets.matches(e, m)) return false;
+                    double squared = distance.applyAsDouble(e);
+                    return squared > 1e-8 && squared <= range * range;
+                },
+                ModuleTargets.comparator(heart, distance), e -> ModuleTargets.attackVisible(level, heart, m, origin, e),
+                m.value("targetMultiple") == 1 ? 64 : 1, ModuleTargets.attackTarget(heart, m)).stream()
+                .map(e -> SableBodyProbe.toWorld(level, e.getBoundingBox().getCenter()).subtract(origin).normalize()).toList();
     }
     private ProjectileAim(){}
 }

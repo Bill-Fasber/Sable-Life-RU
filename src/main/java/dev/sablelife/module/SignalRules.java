@@ -9,7 +9,7 @@ public final class SignalRules {
  public static int limit(String type){return type.equals("signal_logic")?16:64;}
  private static ModuleFields.Field n(String key,int min,int max,int value,int scale){return new ModuleFields.Field(key,min,max,value,scale,List.of());}
  private static ModuleFields.Field c(String key,String... values){return new ModuleFields.Field(key,0,values.length-1,0,1,List.of(values));}
- public static List<ModuleFields.Field> fields(String type){return type.equals("signal_logic")?List.of(n("signalInput",0,65535,0,1),c("signalCondition","signal_powered","signal_unpowered")):List.of(c("eventKind","event_kill","event_part","event_block","event_death"),c("eventFilter","event_filter_default","event_filter_second","event_filter_third","event_filter_all"),c("eventSource","signal_source_all"),n("eventCount",1,9999,1,1),n("eventChannel",0,65535,0,1),n("eventPower",1,15,15,1),n("eventPulse",1,12000,10,20),n("eventCooldown",0,12000,20,20));}
+ public static List<ModuleFields.Field> fields(String type){return type.equals("signal_logic")?List.of(n("signalInput",0,65535,0,1),c("signalCondition","signal_powered","signal_unpowered","signal_eq","signal_ne","signal_gt","signal_lt","signal_ge","signal_le"),n("signalCompare",0,65535,0,1)):List.of(c("eventKind","event_kill","event_part","event_block","event_death"),c("eventFilter","event_filter_default","event_filter_second","event_filter_third","event_filter_all"),c("eventSource","signal_source_all"),n("eventCount",1,9999,1,1),n("eventChannel",0,65535,0,1),n("eventPower",1,15,15,1),n("eventPulse",1,12000,10,20),n("eventCooldown",0,12000,20,20));}
  public static final class Row {
   private final UUID id;private boolean enabled=true;private int revision;private final String type;private final CompoundTag values=new CompoundTag();private UUID source;
   Row(UUID id,String type){this.id=id;this.type=type;for(var f:fields(type))values.putDouble(f.key(),f.initial());}
@@ -30,8 +30,25 @@ public final class SignalRules {
  public Row add(){if(rows.size()>=limit(type))return null;var r=new Row(UUID.randomUUID(),type);rows.add(r);return r;}
  public boolean remove(UUID id){return rows.removeIf(r->r.id.equals(id));}
  public boolean move(UUID id,int delta){if(Math.abs(delta)!=1)return false;int i=rows.indexOf(find(id)),j=i+delta;if(i<0||j<0||j>=rows.size())return false;Collections.swap(rows,i,j);return true;}
- public boolean channelDeleted(int index){boolean changed=false;String k=type.equals("signal_logic")?"signalInput":"eventChannel";for(var r:rows){int c=(int)r.value(k);if(c>index){r.edit(k,c==index+1?0:c-1);changed=true;}}return changed;}
- public void unbind(){for(var r:rows){r.edit(type.equals("signal_logic")?"signalInput":"eventChannel",0);r.source(null);}}
+ public static boolean compares(Row row) { return row.value("signalCondition") >= 2; }
+ public static boolean matches(Row row, int left, int right) {
+  return switch ((int) row.value("signalCondition")) {
+   case 0 -> left > 0;
+   case 1 -> left == 0;
+   case 2 -> left == right;
+   case 3 -> left != right;
+   case 4 -> left > right;
+   case 5 -> left < right;
+   case 6 -> left >= right;
+   case 7 -> left <= right;
+   default -> false;
+  };
+ }
+ public boolean channelDeleted(int index){boolean changed=false;
+  var keys=type.equals("signal_logic")?List.of("signalInput","signalCompare"):List.of("eventChannel");
+  for(var r:rows)for(var k:keys){int c=(int)r.value(k);if(c>index){r.edit(k,c==index+1?0:c-1);changed=true;}}
+  return changed;}
+ public void unbind(){for(var r:rows){r.edit(type.equals("signal_logic")?"signalInput":"eventChannel",0);if(type.equals("signal_logic"))r.edit("signalCompare",0);r.source(null);}}
  public ListTag save(){var t=new ListTag();rows.forEach(r->t.add(r.save()));return t;}
  public void load(ListTag saved){rows.clear();var seen=new HashSet<UUID>();for(var v:saved){if(rows.size()>=limit(type))break;var t=(CompoundTag)v;if(!t.hasUUID("Id")||!seen.add(t.getUUID("Id")))continue;if(type.equals("combat_event")&&t.getCompound("Values").getDouble("eventKind")==1)continue;var r=new Row(t.getUUID("Id"),type);boolean valid=true;for(var f:fields(type))if(!f.key().equals("eventSource")&&t.getCompound("Values").contains(f.key())&&!r.edit(f.key(),t.getCompound("Values").getDouble(f.key())))valid=false;if(valid){r.enabled=t.getBoolean("Enabled");r.source=t.hasUUID("Source")?t.getUUID("Source"):null;rows.add(r);}}}
 }

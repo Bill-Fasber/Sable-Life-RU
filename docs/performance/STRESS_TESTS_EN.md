@@ -75,4 +75,6 @@ Stationary vanilla world crafting tables create horizontal protected areas, chec
 
 ## Limits of the results
 
+Additional benchmarks after 0.1.403: [Command Wand request handling](COMMAND_WAND_SPAM_EN.md) and [Propulsion / Motion Damping](PHYSICAL_MOTION_0.1.440_EN.md). Their build labels and workloads remain separate from the historical tables above.
+
 These short server runs do not establish long-term memory stability, client FPS, multiplayer network performance or every modpack's behavior. 64 spawn slots and 64 complex combatants are different workloads. Keep default caps initially and adjust density for actual creations and server hardware.

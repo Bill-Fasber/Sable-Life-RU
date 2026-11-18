@@ -108,7 +108,22 @@ public final class PhotomancyRespawnBridge {
   @Override public Set<UUID> bodies(){var ids=new HashSet<UUID>();for(var p:progress.placedSubLevels().values())ids.add(p.placedUuid());return ids;}
   @Override public void restoreApprovals(HeartBlockEntity heart){
    for(var part:blueprint.subLevels())for(var raw:part.blockEntities())for(var item:raw.getCompound("VirtualModules").getList("Modules",10)){
-    var tag=(CompoundTag)item;if(tag.getString("Type").equals("command")&&tag.hasUUID("Id")&&!tag.getBoolean("CommandApprovalRequired")){var id=module(tag.getUUID("Id"));var m=id==null?null:heart.modules().find(id);if(m!=null&&m.type().equals("command"))m.approveCommands();}
+    var tag=(CompoundTag)item;if(dev.sablelife.module.AuthoringLimits.requiresOperator(tag.getString("Type"))&&tag.hasUUID("Id")&&!tag.getBoolean("CommandApprovalRequired")){var id=module(tag.getUUID("Id"));var m=id==null?null:heart.modules().find(id);if(m!=null&&m.type().equals(tag.getString("Type")))m.approveCommands();}
+   }
+  }
+  @Override public void restoreBlueprintSpawns(HeartBlockEntity heart, CompoundTag references, boolean summonsOnly) {
+   for(var part:blueprint.subLevels())for(var raw:part.blockEntities()){
+    var stored=raw.getCompound(dev.sablelife.ownership.BlueprintSpawns.SAVED_REFERENCES);
+    for(var item:raw.getCompound("VirtualModules").getList("Modules",10)){
+     var tag=(CompoundTag)item;
+     if(!tag.getString("Type").equals("blueprint_spawn")||!tag.hasUUID("Id"))continue;
+     var original=tag.getUUID("Id");
+     var id=module(original);
+     var spawn=id==null?null:heart.modules().find(id);
+     if(spawn==null||!spawn.type().equals("blueprint_spawn")||summonsOnly&&spawn.value("spawnArenaRole")!=2)continue;
+     String name=references.contains(original.toString(),8)?references.getString(original.toString()):stored.getString(original.toString());
+     dev.sablelife.ownership.BlueprintSpawns.restoreReference(heart,spawn,name);
+    }
    }
   }
   @Override public CompoundTag save(){var tag=progress.save();if(!legacyIncremental){tag.putBoolean("SableLifeDirect",true);tag.putBoolean("SableLifeDirectDone",directDone);}return tag;}

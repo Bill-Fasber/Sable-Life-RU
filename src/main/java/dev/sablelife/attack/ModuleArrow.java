@@ -65,6 +65,10 @@ public final class ModuleArrow extends Arrow {
     @Override public void onSyncedDataUpdated(EntityDataAccessor<?> key) { super.onSyncedDataUpdated(key); if (key.equals(HITBOX)) refreshDimensions(); }
     @Override protected boolean canHitEntity(Entity target){return !dev.sablelife.combat.OwnerPlayers.protectedFromProjectile(target,this)&&super.canHitEntity(target);}
     @Override protected EntityHitResult findHitEntity(Vec3 start, Vec3 end) {
+        // Sable's block clip can return a plot-space endpoint during vanilla arrow flight.
+        // Normalize both endpoints before building the expanded query, including arrows on a plot.
+        start = SableBodyProbe.toWorld(level(), start);
+        end = SableBodyProbe.toWorld(level(), end);
         return ProjectileUtil.getEntityHitResult(level(), this, start, end, new AABB(start, end).inflate(hitbox() / 2. + .3), this::canHitEntity, hitbox() / 2F);
     }
     @Override public void tick() {

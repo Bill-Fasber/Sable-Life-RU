@@ -3,7 +3,7 @@
 The server's `sablelife-server.toml` controls module availability. Clients follow server snapshots.
 
 - **Heart Core:** the full module catalog, enabled by default.
-- **Survival Heart Core:** its supported catalog, enabled by default. Command, Limb Loot, Arena and Blueprint Spawner remain unavailable. Energy costs and restrictions still apply. Buff properties are unavailable.
+- **Survival Heart Core:** supported modules are enabled by default, except Message Display. Command, Limb Loot, Arena and Blueprint Spawner remain unavailable. Energy costs and restrictions still apply. Buff properties are unavailable.
 - **Redstone Core:** Move Set, Signal Logic, Pulse Sequence, Wireless Redstone, Target Sensor, Target Alignment, Auto Facing, Signal Turning, Gyroscope, Hover Anchor, Linear Movement, Visual Effects, Distortion Trail, Particle Effects, Item Display, Trigger Sound and Block Interaction. All supported types default to enabled.
 
 Redstone Core Linear Movement uses collision-checked Travel; Teleport and Force Movement are locked. Its Move Set always ignores target and health conditions while retaining priority, weight, timing and repeat rules. Switches cannot grant capabilities outside a core's catalog.
@@ -21,10 +21,13 @@ enableWildEncounters = true
 melee = true
 health_phase = true
 sound = true
+message_display = true
 
 [modules.survivalHeartCore]
 melee = true
 armor = true
+message_display = false
+disabledAddonModules = ["example:alarm"]
 
 [modules.redstoneCore]
 move_set = true
@@ -34,7 +37,11 @@ visual_shockwave = true
 block_interaction = true
 ```
 
-These are examples, not the complete generated config. Ordinary Heart Core Survival editing includes loot, experience and terrain destruction; enable it when that behavior is intended. Command authoring and server blueprint selection retain their operator requirements.
+Ordinary Heart Core Survival editing includes loot, experience and terrain destruction. Virtual Command Block editing and ordinary Heart Core Message Display editing require Creative mode and operator permissions. Server blueprint selection also requires operator permissions.
+
+When enabled on a Survival Heart Core, Message Display can send chat, title and action bar messages to players within its recipient radius in the same dimension. Server-wide broadcast is available on ordinary Heart Cores.
+
+Each core table has its own `disabledAddonModules` list for Java addon and Datapack module IDs. The existing `modules.disabledAddonModules` list still disables those IDs across all cores. Both lists preserve saved module settings.
 
 Energy settings retain the internal `[survivalTokens]` table and `Token` key names for configuration compatibility. The UI calls this resource **Energy**. `depositValues` contains all fuel entries as `item_id=value`; there is no separate primary copper entry. Module multipliers are under `[survivalTokens.moduleMultipliers]`.
 

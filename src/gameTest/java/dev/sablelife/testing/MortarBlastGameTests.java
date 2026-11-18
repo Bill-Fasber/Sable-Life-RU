@@ -1,15 +1,20 @@
 package dev.sablelife.testing;
+import dev.ryanhcode.sable.api.SubLevelAssemblyHelper;
+import dev.ryanhcode.sable.companion.math.BoundingBox3i;
 import dev.sablelife.SableLife;
 import dev.sablelife.attack.*;
 import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.module.*;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.gametest.framework.*;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.*;
+import java.util.ArrayList;
+import java.util.List;
 @GameTestHolder("sablelife_blast_tests")
 @PrefixGameTestTemplate(false)
 public final class MortarBlastGameTests {
@@ -23,6 +28,114 @@ public final class MortarBlastGameTests {
         var pos = h.absolutePos(new BlockPos(1, 6, 1)); h.getLevel().setBlockAndUpdate(pos, SableLife.HEART.get().defaultBlockState());
         return (HeartBlockEntity) h.getLevel().getBlockEntity(pos);
     }
+
+    @GameTest(template = "combat", batch = "mortar_visibility", timeoutTicks = 30)
+    public static void MortarSightBlocksUndergroundTargetAndFiresAtVisibleTarget(GameTestHelper h) {
+        var setup = mortarSetup(h);
+        var mortar = setup.mortar();
+        h.assertTrue(mortar.edit("lineOfSight", 1, ""), "Mortar has no line-of-sight setting");
+        mortar.edit("targetMultiple", 1, "");
+        h.assertTrue(VirtualModule.load(mortar.save()).value("lineOfSight") == 1,
+                "Mortar line of sight was lost on reload");
+
+        setup.heart().tryActivate(TestActors.creative(h.getLevel()));
+        setup.heart().modules().tick(setup.heart());
+        h.assertTrue(shells(h, setup.heart()).isEmpty(), "Mortar fired with only an underground target");
+        var visible = target(h, setup.center().add(-6, 0, 0));
+        h.runAfterDelay(6, () -> {
+            var shells = shells(h, setup.heart());
+            h.assertTrue(shells.size() == 1 && shells.getFirst().getDeltaMovement().x < 0,
+                    "Multi-target mortar did not fire exclusively toward the visible target");
+            shells.forEach(Entity::discard);
+            mortar.edit("enabled", 0, "");
+            visible.discard();
+            setup.underground().discard();
+            h.succeed();
+        });
+    }
+
+    @GameTest(template = "combat", batch = "mortar_move_visibility", timeoutTicks = 30)
+    public static void MoveSetSightAndMortarSightApplyAtTheirOwnSteps(GameTestHelper h) {
+        var setup = mortarSetup(h);
+        var heart = setup.heart();
+        var table = heart.modules().add("move_set");
+        var moveSet = table.moveSet();
+        h.assertTrue(moveSet.edit("add", 0, "", heart.modules())
+                        && moveSet.edit("action_add", 0, "0|" + setup.mortar().id(), heart.modules())
+                        && moveSet.edit("target", 1, "0", heart.modules())
+                        && moveSet.edit("lineOfSight", 1, "0", heart.modules()),
+                "Could not configure the line-of-sight move");
+
+        var saved = heart.modules().save();
+        saved.getList("Modules", 10).getCompound(0).getCompound("Settings").remove("lineOfSight");
+        saved.getList("Modules", 10).getCompound(1).getList("Moves", 10).getCompound(0)
+                .getCompound("Config").getCompound("Settings").remove("inheritMoveTarget");
+        heart.modules().load(saved);
+        var mortar = heart.modules().find(setup.mortar().id());
+        h.assertTrue(mortar.value("lineOfSight") == 0, "Existing mortars changed from unrestricted targeting");
+        var rules = heart.modules().find(table.id()).moveSet().get(0).config();
+        heart.tryActivate(TestActors.creative(h.getLevel()));
+        heart.modules().tick(heart);
+        h.assertTrue(!rules.targetPresent(heart) && !HeartModules.triggered(mortar, heart)
+                && shells(h, heart).isEmpty(), "An underground target started the move");
+
+        var visible = target(h, setup.center().add(-6, 0, 0));
+        h.runAfterDelay(1, () -> {
+            heart.modules().tick(heart);
+            var shells = shells(h, heart);
+            h.assertTrue(HeartModules.triggered(mortar, heart) && shells.size() == 1
+                    && shells.getFirst().getDeltaMovement().x > 0,
+                    "The active move did not preserve legacy mortar aiming at the nearer underground target");
+            shells.forEach(Entity::discard);
+            h.assertTrue(mortar.edit("lineOfSight", 1, ""), "Could not enable the mortar's own sight check");
+        });
+        h.runAfterDelay(7, () -> {
+            var shells = shells(h, heart);
+            h.assertTrue(HeartModules.triggered(mortar, heart) && shells.size() == 1
+                    && shells.getFirst().getDeltaMovement().x < 0,
+                    "The move-powered mortar did not switch its shot to the visible target");
+            shells.forEach(Entity::discard);
+            mortar.edit("enabled", 0, "");
+            visible.discard();
+            setup.underground().discard();
+            h.succeed();
+        });
+    }
+
+    private record MortarSetup(HeartBlockEntity heart, VirtualModule mortar, Vec3 center, LivingEntity underground) {}
+
+    private static MortarSetup mortarSetup(GameTestHelper h) {
+        var level = h.getLevel();
+        var pos = h.absolutePos(new BlockPos(9, 8, 9));
+        level.setBlockAndUpdate(pos, SableLife.HEART.get().defaultBlockState());
+        var body = SubLevelAssemblyHelper.assembleBlocks(level, pos, List.of(pos),
+                new BoundingBox3i(pos.getX(), pos.getY(), pos.getZ(), pos.getX(), pos.getY(), pos.getZ()));
+        var heart = (HeartBlockEntity) level.getBlockEntity(body.getPlot().getCenterBlock());
+        var mortar = heart.modules().add("mortar");
+        mortar.anchors(List.of(ModuleAnchor.create(heart, heart.getBlockPos(), Direction.UP)));
+        mortar.edit("trigger", 0, "");
+        mortar.edit("aimMode", 1, "");
+        mortar.edit("target", 1, "");
+        mortar.edit("targetRange", 8, "");
+        mortar.edit("interval", 5, "");
+        var center = ModuleCombat.baseOrigin(heart, mortar);
+        var roof = BlockPos.containing(center).below();
+        for (int x = 1; x <= 4; x++) {
+            level.setBlockAndUpdate(roof.offset(x, 0, 0), Blocks.STONE.defaultBlockState());
+        }
+        var underground = target(h, center.add(3, -2.75, 0));
+        return new MortarSetup(heart, mortar, center, underground);
+    }
+
+    private static List<ModuleShot> shells(GameTestHelper h, HeartBlockEntity heart) {
+        var result = new ArrayList<ModuleShot>();
+        for (var entity : h.getLevel().getAllEntities()) {
+            if (entity instanceof ModuleShot shot && shot.mortar() && !shot.isRemoved()
+                    && heart.creatureId().equals(shot.attackOwner())) result.add(shot);
+        }
+        return result;
+    }
+
     @GameTest(template="combat")
     public static void OwnBlastCannotDestroyOwnBodyEvenWhenExplosionsAllowed(GameTestHelper h) {
         var world = h.getLevel(); var core = heart(h); var own = core.getBlockPos().east();

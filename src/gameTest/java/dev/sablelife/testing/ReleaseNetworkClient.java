@@ -19,7 +19,8 @@ public final class ReleaseNetworkClient {
         if(!Boolean.getBoolean("sablelife.releaseNetworkClient"))return;var mc=Minecraft.getInstance();
         if(++ticks>2400){System.out.println("RELEASE_NETWORK_CLIENT_FAIL timeout "+phase);mc.stop();return;}
         if(!started&&mc.screen instanceof TitleScreen&&mc.getOverlay()==null){
-            started=true;String address="127.0.0.1:25591";
+            started=true;
+            String address="127.0.0.1:"+Integer.getInteger("sablelife.releaseNetworkPort",25591);
             org.lwjgl.glfw.GLFW.glfwHideWindow(mc.getWindow().getWindow());
             System.out.println("RELEASE_NETWORK_CLIENT_ORIGIN: "+dev.sablelife.SableLife.class.getProtectionDomain().getCodeSource().getLocation());
             ConnectScreen.startConnecting(mc.screen,mc,ServerAddress.parseString(address),new ServerData("Local release test",address,ServerData.Type.OTHER),false,null);return;

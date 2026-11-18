@@ -149,18 +149,23 @@ public final class BodyOwnership extends SavedData {
         while(popped<limit&&examined<visits&&removed<budget&&!cursor.queue.isEmpty()) {
             long position=cursor.next();examined++;popped++;var pos=BlockPos.of(position);
             if(!id.equals(part?parts.get(position):owners.get(position)))continue;
-            if(!level.hasChunkAt(pos)){cursor.add(position);continue;}
-            if(level.getBlockState(pos).isAir()){forget(pos);removed++;continue;}
-            if(wholeBodies&&Sable.HELPER.getContaining(level,pos) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel body&&attemptedBodies.add(body.getUniqueId())) {
-                var result=SableBodyDeletion.attempt(level,this,body,id,part,Math.max(0,visits-examined),effect);examined+=result.visits();
-                if(result.removed()>0){removed+=result.removed();continue;}
-                if(examined>=visits){cursor.add(position);break;}
+            try {
+                if(!level.hasChunkAt(pos)){cursor.add(position);continue;}
+                if(level.getBlockState(pos).isAir()){forget(pos);removed++;continue;}
+                if(wholeBodies&&Sable.HELPER.getContaining(level,pos) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel body&&attemptedBodies.add(body.getUniqueId())) {
+                    var result=SableBodyDeletion.attempt(level,this,body,id,part,Math.max(0,visits-examined),effect);examined+=result.visits();
+                    if(result.removed()>0){removed+=result.removed();continue;}
+                    if(examined>=visits){cursor.add(position);break;}
+                }
+                var point=dev.sablelife.compat.sable.SableBodyProbe.toWorld(level,pos.getCenter());boolean erased=eraseOwnedBlock(level,pos);
+                if(erased){
+                    forget(pos);removed++;
+                    if(smoke-->0){if(effect!=null)effect.emit(level,point);else dev.sablelife.module.ModuleParticles.send(level,net.minecraft.core.particles.ParticleTypes.POOF,point.x,point.y,point.z,6,.35,.35,.35,.04);}
+                }else if(id.equals(part?parts.get(position):owners.get(position)))cursor.add(position);
+            } catch (RuntimeException | LinkageError failure) {
+                if (matchesCleanup(pos, id, part)) cursor.add(position);
+                throw failure;
             }
-            var point=dev.sablelife.compat.sable.SableBodyProbe.toWorld(level,pos.getCenter());boolean erased=eraseOwnedBlock(level,pos);
-            if(erased){
-                if(smoke-->0){if(effect!=null)effect.emit(level,point);else dev.sablelife.module.ModuleParticles.send(level,net.minecraft.core.particles.ParticleTypes.POOF,point.x,point.y,point.z,6,.35,.35,.35,.04);}
-                forget(pos);removed++;
-            }else if(id.equals(part?parts.get(position):owners.get(position)))cursor.add(position);
         }
         if(!index.containsKey(id))cursors.remove(id);
         return new CleanupResult(removed,examined);

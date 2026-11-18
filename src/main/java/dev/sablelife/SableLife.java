@@ -6,6 +6,11 @@ import dev.sablelife.ownership.BodyProtection;
 import dev.sablelife.heart.HeartBlock;
 import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.item.CreativeReleaseToolItem;
+import dev.sablelife.module.ParticleSpriteStyle;
+import java.util.EnumMap;
+import java.util.Map;
+import net.minecraft.core.particles.ParticleType;
+import net.minecraft.core.particles.SimpleParticleType;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.world.inventory.MenuType;
 import net.minecraft.network.chat.Component;
@@ -58,6 +63,17 @@ public final class SableLife {
             PARTICLES.register("starburst",()->new net.minecraft.core.particles.SimpleParticleType(true));
     public static final DeferredHolder<net.minecraft.core.particles.ParticleType<?>,net.minecraft.core.particles.SimpleParticleType> RANDOM_STARBURST =
             PARTICLES.register("random_starburst",()->new net.minecraft.core.particles.SimpleParticleType(true));
+    private static final Map<ParticleSpriteStyle, DeferredHolder<ParticleType<?>, SimpleParticleType>> SPRITE_PARTICLES =
+            new EnumMap<>(ParticleSpriteStyle.class);
+    static {
+        for (var style : ParticleSpriteStyle.values()) {
+            SPRITE_PARTICLES.put(style, PARTICLES.register(style.path(), () -> new SimpleParticleType(true)));
+        }
+    }
+
+    public static SimpleParticleType spriteParticle(ParticleSpriteStyle style) {
+        return SPRITE_PARTICLES.get(style).get();
+    }
     public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES =
             DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, MOD_ID);
     public static final DeferredRegister<CreativeModeTab> TABS =
@@ -119,6 +135,10 @@ public final class SableLife {
             () -> new dev.sablelife.item.DataCopierItem(new Item.Properties().stacksTo(1).rarity(Rarity.RARE)));
     public static final DeferredItem<dev.sablelife.item.CoreRemoteItem> CORE_REMOTE = ITEMS.register("core_remote",
             () -> new dev.sablelife.item.CoreRemoteItem(new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<dev.sablelife.item.CommandWandItem> COMMAND_WAND = ITEMS.register("command_wand",
+            () -> new dev.sablelife.item.CommandWandItem(new Item.Properties().stacksTo(1)));
+    public static final DeferredItem<dev.sablelife.item.InspectionSpyglass> INSPECTION_TOOL = ITEMS.register("inspection_tool",
+            () -> new dev.sablelife.item.InspectionSpyglass(new Item.Properties().stacksTo(1)));
     public static final DeferredBlock<dev.sablelife.heart.RedstoneCoreBlock> REDSTONE_CORE=BLOCKS.register("redstone_core",()->new dev.sablelife.heart.RedstoneCoreBlock(BlockBehaviour.Properties.of().mapColor(MapColor.COLOR_PURPLE).strength(4,6).sound(SoundType.METAL)));
     public static final DeferredItem<BlockItem> REDSTONE_CORE_ITEM=ITEMS.registerSimpleBlockItem(REDSTONE_CORE);
     public static final DeferredBlock<dev.sablelife.heart.SurvivalLifeCoreBlock> SURVIVAL_LIFE_CORE=BLOCKS.register("survival_heart_core",
@@ -137,11 +157,15 @@ public final class SableLife {
                         output.accept(SURVIVAL_RELEASE_TOOL.get());
                         output.accept(DATA_COPIER.get());
                         output.accept(CORE_REMOTE.get());
+                        output.accept(COMMAND_WAND.get().getDefaultInstance());
+                        output.accept(INSPECTION_TOOL.get());
                         output.accept(WILD_ENCOUNTER_TOOL.get());
                     }).build());
 
     public SableLife(IEventBus bus, net.neoforged.fml.ModContainer container) {
         container.registerConfig(net.neoforged.fml.config.ModConfig.Type.SERVER, SableLifeServerConfig.LOADER_SPEC);
+        if (net.neoforged.fml.loading.FMLLoader.getDist() == net.neoforged.api.distmarker.Dist.CLIENT)
+            container.registerConfig(net.neoforged.fml.config.ModConfig.Type.CLIENT, SableLifeClientConfig.SPEC);
         dev.sablelife.ownership.CoreChunkLoading.register();
         bus.addListener(dev.sablelife.compat.photomancy.PhotomancyCompat::setup);
         dev.sablelife.sound.SoundLibrary.prepare();
@@ -154,6 +178,7 @@ public final class SableLife {
         bus.addListener((net.neoforged.neoforge.event.entity.EntityAttributeCreationEvent event)->event.put(ENTITY_HITBOX.get(),dev.sablelife.combat.EntityHitbox.attributes().build()));
         PARTICLES.register(bus);
         bus.addListener(dev.sablelife.module.ModuleNetworking::register);
+        bus.addListener(dev.sablelife.heart.SurvivalFuel::register);
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, dev.sablelife.combat.OwnerPlayers::incoming);
         NeoForge.EVENT_BUS.addListener(EventPriority.LOWEST, dev.sablelife.combat.LifeRetaliation::damaged);
         NeoForge.EVENT_BUS.addListener(EventPriority.HIGHEST, dev.sablelife.ownership.BodyInteraction::rightClick);
@@ -174,6 +199,8 @@ public final class SableLife {
         NeoForge.EVENT_BUS.addListener(dev.sablelife.ownership.LifeResidueCleanup::tick);
         NeoForge.EVENT_BUS.addListener(dev.sablelife.ownership.LifeResidueCleanup::stopped);
         NeoForge.EVENT_BUS.addListener(dev.sablelife.heart.DeathSignals::tick);
+        NeoForge.EVENT_BUS.addListener(dev.sablelife.module.ModuleMessageDisplay::tickDeathPlaybacks);
+        NeoForge.EVENT_BUS.addListener(dev.sablelife.module.ModuleMessageDisplay::stopped);
         NeoForge.EVENT_BUS.addListener(dev.sablelife.combat.EntityHitboxes::endTick);
         NeoForge.EVENT_BUS.addListener(dev.sablelife.ownership.BlueprintSpawns::tick);
         NeoForge.EVENT_BUS.addListener(dev.sablelife.ownership.WildEncounters::tick);

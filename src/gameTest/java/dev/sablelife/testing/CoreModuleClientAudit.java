@@ -26,6 +26,7 @@ public final class CoreModuleClientAudit {
     private static final List<String> failures=new ArrayList<>();
     private static final boolean PART_DAMAGE_ONLY = Boolean.getBoolean("sablelife.partDamageUiOnly");
     private static final boolean TRACER_ONLY = Boolean.getBoolean("sablelife.projectileTracerUiOnly");
+    private static final boolean SIGNAL_TURN_ONLY = Boolean.getBoolean("sablelife.signalTurnUiOnly");
     private static int phase,index,ticks,checked,pages;
     private static java.util.concurrent.CompletableFuture<?> reload;
     private static Preview screen;
@@ -48,6 +49,10 @@ public final class CoreModuleClientAudit {
                 cases.removeIf(value -> !ProjectileTracer.supports(value.type));
                 for (var entry : List.copyOf(cases)) cases.add(new Case(entry.kind, entry.type, "projectileTrailStyle", 1));
             }
+            if (SIGNAL_TURN_ONLY) {
+                cases.removeIf(value -> !value.type.equals("signal_turn"));
+                for (var entry : List.copyOf(cases)) cases.add(new Case(entry.kind, entry.type, "turnMode", 1));
+            }
             if(Boolean.getBoolean("sablelife.corePatternUi")){
                 var baseline=List.copyOf(cases);
                 for(var entry:baseline)for(var field:ModuleFields.forType(entry.type))if(field.choice()&&field.choices().size()>1)
@@ -59,7 +64,7 @@ public final class CoreModuleClientAudit {
         if(++ticks<3)return;
         var value=cases.get(index);String label=mc.options.languageCode+"/"+value.kind+"/"+value.type+"/"+value.key+"="+value.value;
         try{check();checked++;System.out.println("CORE_UI_AUDIT PASS "+label);
-            if(PART_DAMAGE_ONLY||TRACER_ONLY||(value.key.equals("default")||List.of("flameShape","fieldShape","particlePattern","pullShape","laserVisual").contains(value.key))&&(value.type.equals("flame")||value.type.equals("block_interaction")||Boolean.getBoolean("sablelife.survivalAimOnly")&&List.of("arrow","gun","mortar","slash").contains(value.type)||Boolean.getBoolean("sablelife.propertyHelpPreview")&&List.of("linear_movement","sensor","health_bar","laser").contains(value.type))){
+            if(PART_DAMAGE_ONLY||TRACER_ONLY||SIGNAL_TURN_ONLY||(value.key.equals("default")||List.of("flameShape","fieldShape","particlePattern","pullShape","laserVisual").contains(value.key))&&(value.type.equals("flame")||value.type.equals("block_interaction")||Boolean.getBoolean("sablelife.survivalAimOnly")&&List.of("arrow","gun","mortar","slash").contains(value.type)||Boolean.getBoolean("sablelife.propertyHelpPreview")&&List.of("linear_movement","sensor","health_bar","laser").contains(value.type))){
                 var target=mc.gameDirectory.toPath().resolve("screenshots/"+mc.options.languageCode+"-"+value.kind+"-"+value.type+"-"+value.key+"-"+value.value+".png");java.nio.file.Files.createDirectories(target.getParent());
                 try(var picture=Screenshot.takeScreenshot(mc.getMainRenderTarget())){picture.writeToFile(target);}
             }
@@ -79,6 +84,25 @@ public final class CoreModuleClientAudit {
         var sync=HeartDashboardScreen.class.getDeclaredMethod("sync");sync.setAccessible(true);
         var fields=(List<ModuleFields.Field>)get("parameters");int slots=(int)get("parameterSlots");
         if(slots<=0)throw new AssertionError("No parameter slots");
+        if (SIGNAL_TURN_ONLY) {
+            boolean random = cases.get(index).value == 1;
+            var keys = fields.stream().map(ModuleFields.Field::key).toList();
+            if (!keys.containsAll(List.of("turnMode", "turnSpeed", "turnCollision", "turnWithGyro"))
+                    || !((Button)get("trigger")).visible) throw new AssertionError("Shared turn or trigger controls missing");
+            for (String prefix : List.of("dashboard.sablelife.", "dashboard.sablelife.property_help.")) {
+                String key = prefix + "turnWithGyro";
+                if (Component.translatable(key).getString().equals(key)) throw new AssertionError("Missing " + key);
+            }
+            for (String direction : ModuleSignalTurn.DIRECTIONS) {
+                if (keys.contains(direction + "Source") == random || keys.contains(direction + "Channel") == random)
+                    throw new AssertionError("Wrong direction field visibility: " + direction);
+            }
+            for (String angle : List.of("turnMinYaw", "turnMaxYaw")) {
+                if (keys.contains(angle) != random) throw new AssertionError("Wrong angle field visibility: " + angle);
+                if (NumericWheelSteps.module("signal_turn", angle, 1, -180) != 5)
+                    throw new AssertionError("Turn angle must scroll by 5 degrees");
+            }
+        }
         if(PART_DAMAGE_ONLY){
             var value=cases.get(index);
             boolean watches=List.of("partBreakMode","accumScope").contains(value.key);
@@ -88,7 +112,22 @@ public final class CoreModuleClientAudit {
             var keys=fields.stream().map(ModuleFields.Field::key).toList();
             if(keys.contains("watchedPart")!=watches||keys.contains("partBreakThreshold")!=(partBreak&&watches))
                 throw new AssertionError("Unexpected watched-part or threshold fields");
+            if (partBreak) {
+                var preview = (Button)get("preview");
+                var tooltip = preview.getTooltip();
+                if (preview.active != watches || (tooltip != null) != watches)
+                    throw new AssertionError("A watched-part-only selection should enable Preview and show its legend");
+                if (tooltip != null) {
+                    var mc = Minecraft.getInstance();
+                    String legend = "dashboard.sablelife.part_break_preview_help";
+                    if (Component.translatable(legend).getString().equals(legend) || tooltip.toCharSequence(mc).isEmpty())
+                        throw new AssertionError("Missing localized Part Break preview legend");
+                }
+            }
             if (value.type.equals("damage_accumulation")) {
+                var preview = (Button)get("preview");
+                if (preview.visible != watches || preview.active != watches)
+                    throw new AssertionError("Preview should show and activate only with a valid watched part");
                 var threshold = fields.stream().filter(field -> field.key().equals("accumThreshold")).findFirst().orElseThrow();
                 if (NumericWheelSteps.module(value.type, threshold.key(), threshold.scale(), threshold.min()) != 5)
                     throw new AssertionError("Damage threshold must scroll by 5 health points");
@@ -142,10 +181,12 @@ public final class CoreModuleClientAudit {
             if(!value.key.equals("default"))module.edit(value.key,value.value,"");
             if(value.kind==1){RedstoneCorePolicy.constrainMovement(module);if(type.equals("move_set"))module.edit("ignoreConditions",1,"");}
             if(value.kind==2)SurvivalLifeCorePolicy.constrain(module);
+            if (PART_DAMAGE_ONLY && module.listensToPart())
+                module.watchedPart(new ModuleAnchor(new UUID(0, 1), net.minecraft.core.BlockPos.ZERO, net.minecraft.core.Direction.UP));
             if(Boolean.getBoolean("sablelife.survivalAimOnly")&&List.of("arrow","gun","mortar","slash").contains(type)){module.edit(type.equals("mortar")?"aimMode":"shotAim",1,"");module.edit("targetMultiple",1,"");}
             var tag=modules.save();tag.putBoolean("Ready",true);tag.putBoolean("Editable",true);tag.putUUID("Selected",module.id());
             tag.putBoolean("ControlCore",value.kind==1);tag.putBoolean("SurvivalCore",value.kind==2);tag.putBoolean("ControlReady",true);tag.putString("ControlStatus","ready");
-            tag.putLong("SurvivalTokens",1234);var row=tag.getList("Modules",10).getCompound(0);row.putString("Status","unmarked");row.putString("MovementPhase","idle");row.putString("TokenFormula","free");
+            tag.putLong("SurvivalTokens",1234);var row=tag.getList("Modules",10).getCompound(0);row.putString("Status",type.equals("damage_accumulation") && module.watchedPart()!=null ? "valid" : "unmarked");row.putString("MovementPhase","idle");row.putString("TokenFormula","free");
             var inventory=new Inventory(null);var menu=new HeartDashboardMenu(1,inventory);var paper=new ItemStack(Items.PAPER);paper.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(paper);
             panel=new HeartDashboardScreen(menu,inventory,title);panel.init(minecraft,width,height);
         }

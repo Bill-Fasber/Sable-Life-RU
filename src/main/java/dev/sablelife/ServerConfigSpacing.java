@@ -16,12 +16,16 @@ import java.util.regex.Pattern;
 public final class ServerConfigSpacing {
     private static final Pattern BOUNDARY=Pattern.compile(
             "(?m)^([\\t ]*(?:[A-Za-z0-9_-]+[\\t ]*=.*|\\][\\t ]*(?:#.*)?))(\\r?\\n)(?=[\\t ]*(?:#|\\[|[A-Za-z0-9_-]+[\\t ]*=))");
+    private static final Pattern MODULE_LIMIT_LINE = Pattern.compile(
+            "(?m)^([\\t ]*maximumModulesPerCreature[\\t ]*=[\\t ]*[+-]?[0-9][0-9_]*)([\\t ]*)$");
 
     @SubscribeEvent public static void loaded(ModConfigEvent.Loading event){formatFile(event.getConfig());}
     @SubscribeEvent public static void reloaded(ModConfigEvent.Reloading event){formatFile(event.getConfig());}
 
     public static String format(String original){
         String formatted=compactModules(BOUNDARY.matcher(original).replaceAll("$1$2$2"));
+        formatted = MODULE_LIMIT_LINE.matcher(formatted).replaceFirst(
+                "$1 # Cores with more modules may take longer to load, including from blueprints.$2");
         if(formatted.equals(original))return original;
         var parser=new TomlParser();
         // A multiline literal may contain assignments. Never change its value.

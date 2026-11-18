@@ -38,6 +38,22 @@ public final class CoreRemoteNetworkClient {
     private static boolean openingSettings;
     private static boolean traveledAway;
     private static boolean activationAttempted;
+    private static boolean sawUnsupportedDetails;
+
+    @SubscribeEvent
+    public static void diagnosticMessage(net.neoforged.neoforge.client.event.ClientChatReceivedEvent.System event) {
+        if (!Boolean.getBoolean("sablelife.remoteClaimsOptionReplay")) return;
+        if (event.getMessage().getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents translated
+                && translated.getKey().equals("message.sablelife.core_remote_unsupported_details")) {
+            var text = event.getMessage().getString();
+            if (!text.contains(System.getProperty("sablelife.remoteClaimsFixtureId", "ftbchunks")) || !text.contains("allowCoreRemoteWithUnsupportedClaims")) {
+                throw new IllegalStateException("Unsupported claim details lost their mod ID or setting: " + text);
+            }
+            sawUnsupportedDetails = true;
+            System.out.println("CORE_REMOTE_LOCALIZED_CLAIM_DENIAL PASS " + Minecraft.getInstance().getLanguageManager().getSelected());
+        }
+    }
+
 
     @SubscribeEvent
     public static void tick(ClientTickEvent.Post event) {
@@ -102,6 +118,7 @@ public final class CoreRemoteNetworkClient {
                 throw new IllegalStateException("Incorrect localized item name or wrong remote menu for " + role);
             }
             if (Boolean.getBoolean("sablelife.coreRemoteCheckItemPose")) checkItemPose(mc, stack);
+            if (Boolean.getBoolean("sablelife.coreRemoteDiagnostics")) checkDiagnostics(mc, role);
             ready = true;
             System.out.println("CORE_REMOTE_NETWORK_CLIENT " + role + " PASS");
         }
@@ -126,6 +143,28 @@ public final class CoreRemoteNetworkClient {
             System.out.println("CORE_REMOTE_NETWORK_CLIENT_RELOAD " + role + " PASS " + unloadedAttempts + " out-of-range attempts");
             unloadedAttempts = 0;
         }
+    }
+
+    private static void checkDiagnostics(Minecraft mc, String role) {
+        if (Boolean.getBoolean("sablelife.remoteClaimsOptionReplay") && !sawUnsupportedDetails) {
+            throw new IllegalStateException("Client did not receive the localized unsupported-claim denial");
+        }
+        for (var key : new String[] {"config.sablelife.allow_unsupported_remote_claims",
+                "config.sablelife.allow_unsupported_remote_claims.tooltip", "message.sablelife.core_remote_unsupported_details"}) {
+            if (!net.minecraft.client.resources.language.I18n.exists(key)) throw new IllegalStateException("Missing translation " + key);
+        }
+        for (var suffix : new String[] {"out_of_reach", "requires_creative", "editor_denied", "world_protected",
+                "unsupported_protection", "unsupported_aeroclaims", "claim_denied", "claim_check_failed"}) {
+            var key = "message.sablelife.core_remote_" + suffix;
+            if (!net.minecraft.client.resources.language.I18n.exists(key)) {
+                throw new IllegalStateException("Missing remote diagnostic: " + key);
+            }
+            var text = net.minecraft.network.chat.Component.translatable(key);
+            if (mc.font.width(text) > mc.getWindow().getGuiScaledWidth() - 20) {
+                throw new IllegalStateException("Remote diagnostic exceeds the action bar width: " + key);
+            }
+        }
+        System.out.println("CORE_REMOTE_DIAGNOSTICS " + role + " PASS " + mc.getLanguageManager().getSelected());
     }
 
     private static void checkItemPose(Minecraft mc, ItemStack stack) {

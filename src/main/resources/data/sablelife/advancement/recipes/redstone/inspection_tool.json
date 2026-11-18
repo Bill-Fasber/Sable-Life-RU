@@ -1,0 +1,17 @@
+{
+  "parent": "minecraft:recipes/root",
+  "criteria": {
+    "has_spyglass": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [ { "items": "minecraft:spyglass" } ]
+      }
+    },
+    "has_the_recipe": {
+      "trigger": "minecraft:recipe_unlocked",
+      "conditions": { "recipe": "sablelife:inspection_tool" }
+    }
+  },
+  "requirements": [ [ "has_spyglass", "has_the_recipe" ] ],
+  "rewards": { "recipes": [ "sablelife:inspection_tool" ] }
+}

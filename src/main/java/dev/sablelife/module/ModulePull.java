@@ -105,7 +105,7 @@ public final class ModulePull {
         long now = level.getGameTime(); var active = new HashSet<UUID>();
         for (var module : modules) {
             if (!module.type().equals("pull")) continue;
-            if (module.emitter()==null && heart.health().state() == HeartState.ALIVE && !module.detached() && HeartModules.status(module, heart).equals("disconnected")) { module.detach(); heart.setChanged(); }
+            if (module.emitter()==null) HeartModules.latchDetachedMark(module, heart);
             if (!EmitterRuntime.active(module, heart)) continue;
             active.add(module.id()); var state = states.computeIfAbsent(module.id(), ignored -> new State());
             var before=state.clock.phase();

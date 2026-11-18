@@ -76,10 +76,28 @@ public final class ModuleGroundStrike {
                 if (point != null && positions.add(net.minecraft.core.BlockPos.containing(point))) result.add(point);
             }
         } else if (module.value("strikeMode") == 2) {
-            ModuleTargets.query(level, heart.creatureId(), new AABB(origin, origin).inflate(module.value("strikeRange")), e -> eligible(e, module))
-                    .stream().filter(e -> { double distance = ModuleArena.horizontalDistance(SableBodyProbe.toWorld(level, e.position()), origin); return distance >= module.value("strikeStart") && distance <= module.value("strikeRange"); })
-                    .sorted(ModuleTargets.comparator(heart,e -> SableBodyProbe.toWorld(level, e.position()).distanceToSqr(origin))).limit(module.value("targetMultiple") == 1 ? 64 : 1)
-                    .forEach(e -> { var p = floor(level, heart, SableBodyProbe.toWorld(level, e.position())); if (p != null) result.add(p); });
+            double range = module.value("strikeRange"), near = module.value("strikeStart");
+            boolean multiple = module.value("targetMultiple") == 1;
+            var inherited = ModuleTargets.attackTarget(heart, module);
+            var bounds = new AABB(origin, origin).inflate(range);
+            java.util.function.Predicate<LivingEntity> eligible = e -> {
+                if (!eligible(e, module)) return false;
+                double distance = ModuleArena.horizontalDistance(SableBodyProbe.toWorld(level, e.position()), origin);
+                return distance >= near && distance <= range;
+            };
+            var order = ModuleTargets.comparator(heart, e -> SableBodyProbe.toWorld(level, e.position()).distanceToSqr(origin));
+            if (inherited == null) {
+                for (var target : ModuleTargets.aimedTargets(level, heart, bounds, eligible, order,
+                        e -> ModuleTargets.attackVisible(level, heart, module, origin, e), multiple ? 64 : 1, null)) {
+                    var point = floor(level, heart, SableBodyProbe.toWorld(level, target.position()));
+                    if (point != null) result.add(point);
+                }
+            } else {
+                ModuleTargets.aimedResults(level, heart, bounds, eligible, order,
+                        e -> ModuleTargets.attackVisible(level, heart, module, origin, e)
+                                ? floor(level, heart, SableBodyProbe.toWorld(level, e.position())) : null,
+                        inherited, multiple).limit(multiple ? 64 : 1).forEach(result::add);
+            }
         } else {
             var direction = ModuleCombat.direction(heart, module); direction = new Vec3(direction.x, 0, direction.z).normalize();
             if (direction.lengthSqr() < .001) direction = new Vec3(0, 0, -1);

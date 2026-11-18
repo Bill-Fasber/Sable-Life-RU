@@ -6,7 +6,7 @@ import java.util.*;
 
 /** One marked mouth/hand, a moving capture telegraph, then body-local player/mob attachments. */
 public final class ModuleGrab {
-    private static final class State {java.util.UUID audio;long fire,next;VirtualModule cast;}
+    private static final class State {UUID audio,inherited;long fire,next;VirtualModule cast;}
     private final Map<UUID,State> states=new HashMap<>();private ServerLevel level;private UUID owner;
     public void clear(){if(level!=null&&owner!=null)for(var id:states.keySet()){release(level,new PlayerFreeze.Source(owner,states.get(id).audio));ModuleAudio.stop(level,states.get(id).audio);}states.clear();level=null;owner=null;}
     /** The held player's center follows this point. The player stays upright and retains their view. */
@@ -29,13 +29,35 @@ public final class ModuleGrab {
     }
     private static void release(ServerLevel level,PlayerFreeze.Source source){PlayerFreeze.release(level.getServer(),source);MobGrab.release(level.getServer(),source);}
     public static int capture(ServerLevel level,HeartBlockEntity heart,VirtualModule m){
+        return capture(level, heart, m, ModuleTargets.attackTarget(heart, m));
+    }
+    private static net.minecraft.world.entity.LivingEntity inheritedTarget(ServerLevel level, HeartBlockEntity heart, VirtualModule m, Vec3 point, UUID inherited) {
+        var target = ModuleTargets.resolve(level, inherited, heart.creatureId());
+        double radius = m.value("grabRadius");
+        return target != null && !target.isRemoved() && matches(target, m)
+                && target.getBoundingBox().getCenter().distanceToSqr(point) <= radius * radius
+                && ModuleTargets.attackVisible(level, heart, m, point, target) ? target : null;
+    }
+    private static int capture(ServerLevel level, HeartBlockEntity heart, VirtualModule m, UUID inherited){
         var point=holdPoint(heart,m);if(point==null)return 0;double radius=m.value("grabRadius");
+        var source=new PlayerFreeze.Source(heart.creatureId(),m.audioId());
+        if (inherited != null) {
+            var target = inheritedTarget(level, heart, m, point, inherited);
+            return target != null && grab(heart, m, source, target) ? 1 : 0;
+        }
         var candidates=new ArrayList<net.minecraft.world.entity.LivingEntity>();candidates.addAll(level.players());
         if(m.value("grabTarget")!=0)candidates.addAll(level.getEntitiesOfClass(net.minecraft.world.entity.Mob.class,new net.minecraft.world.phys.AABB(point,point).inflate(radius),MobGrab::eligible));
         var sorted=candidates.stream().filter(p->dev.sablelife.heart.CoreRelations.targetAllowed(level,heart.creatureId(),p)&&matches(p,m)&&p.getBoundingBox().getCenter().distanceToSqr(point)<=radius*radius).sorted(ModuleTargets.comparator(heart,p->p.getBoundingBox().getCenter().distanceToSqr(point))).toList();
-        var source=new PlayerFreeze.Source(heart.creatureId(),m.audioId());
-        for(var target:sorted){boolean caught=target instanceof ServerPlayer player?PlayerFreeze.grab(player,source,(int)m.value("grabDuration"),follow(heart,m)):MobGrab.grab((net.minecraft.world.entity.Mob)target,source,(int)m.value("grabDuration"),mob->followPoint(heart,m,mob));if(caught)return 1;}
+        for(var target:sorted){
+            if (!ModuleTargets.attackVisible(level, heart, m, point, target)) continue;
+            if(grab(heart,m,source,target))return 1;
+        }
         return 0;
+    }
+    private static boolean grab(HeartBlockEntity heart, VirtualModule m, PlayerFreeze.Source source, net.minecraft.world.entity.LivingEntity target) {
+        int duration = (int)m.value("grabDuration");
+        return target instanceof ServerPlayer player ? PlayerFreeze.grab(player, source, duration, follow(heart, m))
+                : MobGrab.grab((net.minecraft.world.entity.Mob)target, source, duration, mob -> followPoint(heart, m, mob));
     }
     private static void draw(ServerLevel level,ServerPlayer viewer,VirtualModule m,Vec3 center){
         var points=new ArrayList<Vec3>();double radius=m.value("grabRadius");
@@ -54,10 +76,20 @@ public final class ModuleGrab {
         if(!(heart.getLevel() instanceof ServerLevel server))return;level=server;owner=heart.creatureId();long now=level.getGameTime();var keep=new HashSet<UUID>();
         for(var m:modules){
             if(!m.type().equals("grab")||!EmitterRuntime.active(m,heart))continue;keep.add(m.id());var s=states.computeIfAbsent(m.id(),id->new State());s.audio=m.audioId();
-            if(s.cast==null){if(now<s.next||heart.isSurvivalCore()&&holdPoint(heart,m)==null||!EmitterRuntime.start(m,heart)||!dev.sablelife.heart.SurvivalTokens.chargeCast(heart,m,1))continue;s.cast=EmitterRuntime.copy(m);s.fire=now+(long)m.value("grabWarning");s.next=s.fire+(long)m.value("grabDuration")+(long)m.value("interval");var point=holdPoint(heart,m);if(point!=null)ModuleAudio.play(level,s.cast,"warningSound",point);}
+            if(s.cast==null){
+                if (now < s.next) continue;
+                var point = holdPoint(heart, m);
+                s.inherited = ModuleTargets.attackTarget(heart, m);
+                if (s.inherited != null && (point == null || inheritedTarget(level, heart, m, point, s.inherited) == null)) continue;
+                if (heart.isSurvivalCore() && point == null || !EmitterRuntime.start(m,heart) || !dev.sablelife.heart.SurvivalTokens.chargeCast(heart,m,1)) continue;
+                s.cast=EmitterRuntime.copy(m);s.fire=now+(long)m.value("grabWarning");s.next=s.fire+(long)m.value("grabDuration")+(long)m.value("interval");
+                if(point!=null)ModuleAudio.play(level,s.cast,"warningSound",point);
+            }
             var point=holdPoint(heart,m.emitter()!=null?m:s.cast);if(point==null){release(level,new PlayerFreeze.Source(owner,m.audioId()));s.cast=null;continue;}
             if(now<s.fire){if(now%4==0)draw(level,null,s.cast,point);continue;}
-            capture(level,heart,m.emitter()!=null?m:s.cast);ModuleAudio.stop(level,m.audioId());ModuleAudio.play(level,s.cast,"grabSound",point);EmitterRuntime.completed(m,heart);s.cast=null;
+            int captured = capture(level,heart,m.emitter()!=null?m:s.cast,s.inherited);ModuleAudio.stop(level,m.audioId());
+            if (s.inherited == null || captured != 0) ModuleAudio.play(level,s.cast,"grabSound",point);
+            EmitterRuntime.completed(m,heart);s.cast=null;
         }
         for(var id:List.copyOf(states.keySet()))if(!keep.contains(id)){release(level,new PlayerFreeze.Source(owner,states.get(id).audio));ModuleAudio.stop(level,states.get(id).audio);states.remove(id);}
     }

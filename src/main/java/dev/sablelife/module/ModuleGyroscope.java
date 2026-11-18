@@ -3,6 +3,7 @@ package dev.sablelife.module;
 import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.compat.sable.SableBodyProbe;
 import dev.sablelife.attack.ContactBox;
+import dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Quaterniond;
@@ -12,6 +13,9 @@ import java.util.*;
 /** A stored local gravity axis, rather than an absolute heading. Linear movement owns poses first. */
 public final class ModuleGyroscope {
     public static final Vec3 DOWN = new Vec3(0,-1,0);
+    record Recovery(List<LinearMovementGeometry.Body> bodies, Vec3 pivot, double radius,
+                    Quaterniond turn, boolean collision, boolean preserveTranslation) {}
+
     private final Map<UUID,String> states = new HashMap<>();
     private final Set<UUID> recovering = new HashSet<>();
     private long lastTick = Long.MIN_VALUE;
@@ -37,6 +41,10 @@ public final class ModuleGyroscope {
         return tick(heart,movementBusy,preserveTranslation,null);
     }
     public boolean tick(HeartBlockEntity heart,boolean movementBusy,boolean preserveTranslation,Vec3 rotationPivot) {
+        return tick(heart, movementBusy, preserveTranslation, rotationPivot, null);
+    }
+    boolean tick(HeartBlockEntity heart, boolean movementBusy, boolean preserveTranslation, Vec3 rotationPivot,
+                 ModuleSignalTurn signalTurn) {
         if (!(heart.getLevel() instanceof ServerLevel level) || !heart.operational() || !heart.wireless().master()) { clear(); return false; }
         if (lastTick==level.getGameTime()) return controlled;
         lastTick=level.getGameTime(); controlled=false; var keep=new HashSet<UUID>();
@@ -52,32 +60,43 @@ public final class ModuleGyroscope {
             double target=module.value("gyroReturn")==0 ? 0 : Math.max(0,limit-3);
             if (!recovering.contains(id) || angle<=target+.05) { recovering.remove(id); states.put(id,"stable"); continue; }
             controlled=true;
-            var bodies=LinearMovementGeometry.capture(heart);var physics=dev.ryanhcode.sable.sublevel.system.SubLevelPhysicsSystem.get(level);
+            var bodies=LinearMovementGeometry.capture(heart);var physics=SubLevelPhysicsSystem.get(level);
             if (bodies.isEmpty() || physics==null) { states.put(id,"blocked"); continue; }
             var pivot=rotationPivot!=null?rotationPivot:SableBodyProbe.toWorld(level,heart.getBlockPos().getCenter());
             double radius=AutoFacingGeometry.radius(bodies,pivot),degrees=Math.min(module.value("gyroSpeed")/20,angle-target);
             boolean collision=module.value("gyroCollision")==1;
             if (collision) degrees=Math.min(degrees,Math.toDegrees(4/radius));
             var turn=AutoFacingGeometry.turn(down,DOWN,true,degrees);
+            if (signalTurn != null && signalTurn.tickWithGyroscope(heart,
+                    new Recovery(bodies, pivot, radius, turn, collision, preserveTranslation))) {
+                states.put(id,"recovering");
+                continue;
+            }
             if (collision && !AutoFacingGeometry.clearTurn(level,bodies,pivot,turn,radius)) { states.put(id,CollisionWorkBudget.exhausted(level)?"budget":"blocked"); continue; }
             var rotated=AutoFacingGeometry.rotated(bodies,pivot,turn);
             if (!LinearMovementGeometry.loadedDestination(level,rotated)) { states.put(id,"blocked"); continue; }
-            for (var body:rotated) {
-                var velocity=new Vector3d(body.body().latestLinearVelocity);
-                // Remove tipping velocity during recovery, but retain world-vertical spin and translation.
-                var angular=new Vector3d(0,body.body().latestAngularVelocity.y,0);
-                if(preserveTranslation){
-                    // Keep this tick's horizontal drive and step assist, which have already reached the pipeline.
-                    physics.getPipeline().teleport(body.body(),body.position(),body.rotation());
-                    physics.getPipeline().addLinearAndAngularVelocity(body.body(),new Vector3d(),new Vector3d(-body.body().latestAngularVelocity.x,0,-body.body().latestAngularVelocity.z));
-                }else{
-                    physics.getPipeline().resetVelocity(body.body());physics.getPipeline().teleport(body.body(),body.position(),body.rotation());
-                    physics.getPipeline().addLinearAndAngularVelocity(body.body(),velocity,angular);
-                }
-            }
+            applyRecovery(physics, rotated, preserveTranslation);
             dev.sablelife.ownership.LoadedCoreIndex.geometryChanged(level);states.put(id,"recovering");
         }
         states.keySet().retainAll(keep);recovering.retainAll(keep);return controlled;
+    }
+    static void applyRecovery(SubLevelPhysicsSystem physics, List<LinearMovementGeometry.Body> rotated,
+                              boolean preserveTranslation) {
+        var pipeline = physics.getPipeline();
+        for (var body : rotated) {
+            var angular = body.body().latestAngularVelocity;
+            if (preserveTranslation) {
+                // Keep the drive and step assist already applied by Linear movement this tick.
+                pipeline.teleport(body.body(), body.position(), body.rotation());
+                pipeline.addLinearAndAngularVelocity(body.body(), new Vector3d(), new Vector3d(-angular.x, 0, -angular.z));
+            } else {
+                var velocity = new Vector3d(body.body().latestLinearVelocity);
+                var spin = new Vector3d(0, angular.y, 0);
+                pipeline.resetVelocity(body.body());
+                pipeline.teleport(body.body(), body.position(), body.rotation());
+                pipeline.addLinearAndAngularVelocity(body.body(), velocity, spin);
+            }
+        }
     }
     public static void preview(net.minecraft.server.level.ServerPlayer player,HeartBlockEntity heart,VirtualModule module) {
         var center=module.anchors().getFirst().world(heart,false);var current=down(heart,module);

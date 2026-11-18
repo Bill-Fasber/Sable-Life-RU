@@ -405,6 +405,55 @@ public final class QuakeGameTests {
         h.assertTrue(shots.stream().allMatch(e -> e.getDeltaMovement().length()>0 && e.getDeltaMovement().length()<=m.value("speed")+.0001),"Homing speed ignored configured bound");
         m.edit("enabled",0,""); engine.tick(heart); h.assertTrue(shots.stream().allMatch(e -> e.isRemoved()),"Disabled module retained projectiles"); h.succeed();
     }
+    @GameTest(template="combat",batch="homing_move_target",timeoutTicks=20)
+    public static void MoveTargetSurvivesHomingChargeAndReload(GameTestHelper h) {
+        var core = fixture(h);
+        var module = homing(core);
+        module.edit("homingCount", 2, "");
+        module.edit("targetMultiple", 1, "");
+        var center = ModuleCombat.origin(core, module, true);
+        var moveTarget = pig(h, center.add(-2, 1, -8), true);
+        var other = pig(h, center.add(2, 1, -3), true);
+        var moves = core.modules().add("move_set").moveSet();
+        moves.edit("add", 0, "", core.modules());
+        moves.edit("action_add", 0, "0|" + module.id(), core.modules());
+        moves.edit("dispatchNear", 6, "0", core.modules());
+        moves.edit("action_duration", .05, "0|0", core.modules());
+
+        core.modules().tick(core);
+        var level = h.getLevel();
+        var shots = level.getEntitiesOfClass(dev.sablelife.attack.ModuleShot.class, new AABB(center, center).inflate(12),
+                shot -> module.id().equals(shot.homingModule()));
+        h.assertTrue(shots.size() == 2 && moveTarget.getUUID().equals(core.modules().moveTarget(module.id())), "Move did not select the farther mob and start its homing salvo");
+        var saved = shots.stream().map(shot -> shot.saveWithoutId(new net.minecraft.nbt.CompoundTag()))
+                .filter(tag -> tag.getInt("HomingIndex") == 0).findFirst().orElseThrow();
+        var reloaded = new dev.sablelife.attack.ModuleShot(SableLife.MODULE_SHOT.get(), level);
+        var legacy = new dev.sablelife.attack.ModuleShot(SableLife.MODULE_SHOT.get(), level);
+        var withoutTarget = saved.copy();
+        withoutTarget.remove("HomingMoveTarget");
+        reloaded.load(saved);
+        legacy.load(withoutTarget);
+        h.runAfterDelay(2, () -> {
+            h.assertTrue(core.modules().moveTarget(module.id()) == null, "Move action stayed active past its window");
+            for (int i = 0; i < 7; i++) {
+                shots.forEach(dev.sablelife.attack.ModuleShot::tick);
+                reloaded.tick();
+                legacy.tick();
+            }
+            h.assertTrue(moveTarget.getUUID().equals(reloaded.homingTarget()), "Reloaded first shot lost its inherited target");
+            h.assertTrue(other.getUUID().equals(legacy.homingTarget()), "Legacy pending shot changed its regular target search");
+            h.assertTrue(shots.stream().anyMatch(shot -> other.getUUID().equals(shot.homingTarget())), "Multi-target salvo lost its secondary target");
+            var blocked = new dev.sablelife.attack.ModuleShot(SableLife.MODULE_SHOT.get(), level);
+            blocked.load(saved);
+            moveTarget.discard();
+            for (int i = 0; i < 7 && !blocked.isRemoved(); i++) blocked.tick();
+            h.assertTrue(blocked.isRemoved() && blocked.homingTarget() == null, "Pending shot fell back when the inherited target was lost");
+            shots.forEach(dev.sablelife.attack.ModuleShot::discard);
+            other.discard();
+            core.forceDeath();
+            h.succeed();
+        });
+    }
     @GameTest(template="combat",batch="homing_hit",timeoutTicks=60)
     public static void HomingHitsTargetWithPhysicalDamageAndSelectedEffects(GameTestHelper h) {
         var heart=fixture(h); var m=homing(heart); m.edit("homingCount",1,""); m.edit("chargeTime",0,""); m.edit("speed",.5,"");

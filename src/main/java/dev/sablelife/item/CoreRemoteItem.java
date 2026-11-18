@@ -49,9 +49,10 @@ public final class CoreRemoteItem extends Item {
         if (player == null || !player.isSecondaryUseActive()
                 || !(level.getBlockEntity(pos) instanceof HeartBlockEntity core)) return InteractionResult.PASS;
         if (level.isClientSide) return InteractionResult.SUCCESS;
-        if (!(player instanceof ServerPlayer serverPlayer) || !player.canInteractWithBlock(pos, 1)
-                || !canAccess(serverPlayer, core)) {
-            message(player, "denied");
+        if (!(player instanceof ServerPlayer serverPlayer)) return InteractionResult.FAIL;
+        var denial = player.canInteractWithBlock(pos, 1) ? accessDenial(serverPlayer, core) : "out_of_reach";
+        if (denial != null) {
+            message(player, denial);
             return InteractionResult.FAIL;
         }
 
@@ -82,8 +83,9 @@ public final class CoreRemoteItem extends Item {
             message(player, "unavailable");
             return InteractionResultHolder.fail(stack);
         }
-        if (!canAccess(serverPlayer, core)) {
-            message(player, "denied");
+        var denial = accessDenial(serverPlayer, core);
+        if (denial != null) {
+            message(player, denial);
             return InteractionResultHolder.fail(stack);
         }
         if (player.isSecondaryUseActive()) {
@@ -105,12 +107,24 @@ public final class CoreRemoteItem extends Item {
         return InteractionResultHolder.consume(stack);
     }
 
-    private static boolean canAccess(ServerPlayer player, HeartBlockEntity core) {
+    static boolean canAccess(ServerPlayer player, HeartBlockEntity core) {
+        return accessDenial(player, core) == null;
+    }
+
+    private static String accessDenial(ServerPlayer player, HeartBlockEntity core) {
         var level = player.serverLevel();
-        return (player.isCreative() || core.isSurvivalCore() || core.isControlCore())
-                && LoadedCoreIndex.isLoadedCore(level, core) && core.canAccessEditor(player)
-                && level.mayInteract(player, core.getBlockPos())
-                && CoreRemoteClaims.allows(player, core.getBlockPos());
+        if (!(player.isCreative() || core.isSurvivalCore() || core.isControlCore())) return "requires_creative";
+        if (!LoadedCoreIndex.isLoadedCore(level, core)) return "unavailable";
+        if (!core.canAccessEditor(player)) return "editor_denied";
+        if (!level.mayInteract(player, core.getBlockPos())) return "world_protected";
+        var claimDenial = CoreRemoteClaims.denial(player, core.getBlockPos());
+        if (claimDenial == null) return null;
+        return switch (claimDenial) {
+            case UNSUPPORTED_PROTECTION -> "unsupported_protection";
+            case UNSUPPORTED_AEROCLAIMS -> "unsupported_aeroclaims";
+            case CLAIM_DENIED -> "claim_denied";
+            case CHECK_FAILED -> "claim_check_failed";
+        };
     }
 
     public static boolean editorInRange(HeartBlockEntity core, Player player, double distanceSquared) {
@@ -140,7 +154,10 @@ public final class CoreRemoteItem extends Item {
     public static void playerTick(PlayerTickEvent.Post event) {
         if (!SESSIONS.isEmpty() && event.getEntity() instanceof ServerPlayer player
                 && player.containerMenu == player.inventoryMenu && !MarkingSessions.isMarking(player)) {
-            SESSIONS.remove(player);
+            var session = SESSIONS.get(player);
+            if (session != null && !MarkingSessions.isPreviewingChannelFace(player, session.core())) {
+                SESSIONS.remove(player);
+            }
         }
     }
 
@@ -154,6 +171,11 @@ public final class CoreRemoteItem extends Item {
 
     private static void message(Player player, String key) {
         player.displayClientMessage(Component.translatable("message.sablelife.core_remote_" + key), true);
+        if (key.equals("unsupported_protection") || key.equals("unsupported_aeroclaims")) {
+            var mods = key.equals("unsupported_protection") ? CoreRemoteClaims.unsupportedProtectionIds()
+                    : "aeroclaims " + CoreRemoteClaims.aeroClaimsVersion();
+            player.sendSystemMessage(Component.translatable("message.sablelife.core_remote_unsupported_details", mods));
+        }
     }
 
     @Override

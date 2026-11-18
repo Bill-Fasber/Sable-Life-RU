@@ -6,6 +6,7 @@ import dev.sablelife.SableLife;
 import dev.sablelife.SableLifeServerConfig;
 import dev.sablelife.heart.*;
 import dev.sablelife.module.*;
+import dev.sablelife.ownership.BodyOwnership;
 import net.minecraft.core.*;
 import net.minecraft.gametest.framework.*;
 import net.minecraft.world.item.*;
@@ -64,7 +65,15 @@ public final class CorePatternMatrixGameTests {
                     if(!variant.key.equals("default"))h.assertTrue(module.edit(variant.key,variant.value,""),"Rejected discrete setting");
                     if(kind==1)RedstoneCorePolicy.sanitize(core);
                     if(kind==2)SurvivalLifeCorePolicy.sanitize(core);
-                    var mark=ModuleAnchor.create(core,core.getBlockPos().east(),Direction.EAST);
+                    var markPosition=core.getBlockPos().east();
+                    // Part Break can consume this fixture's marker and remove its ownership entry.
+                    if(type.equals("part_break")&&level.getBlockState(markPosition).isAir()){
+                        h.assertTrue(level.setBlockAndUpdate(markPosition,Blocks.IRON_BLOCK.defaultBlockState()),
+                                "Could not restore the Part Break marker for the next variant");
+                        BodyOwnership.get(level).bind(markPosition,core.creatureId());
+                    }
+                    var mark=ModuleAnchor.create(core,markPosition,Direction.EAST);
+                    h.assertTrue(mark!=null,"Fixture marker is missing for "+variant.key+"="+variant.value);
                     module.anchors(module.area()?List.of(mark,mark):List.of(mark));
                     if(type.equals("arena"))module.arenaCenter(ModuleArena.corePosition(core),level.dimension().location().toString());
                     if(type.equals("blueprint_spawn"))module.arenaCenter(ModuleArena.corePosition(core).add(0,8,0),level.dimension().location().toString());

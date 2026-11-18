@@ -467,6 +467,7 @@ public final class WildEncounters extends SavedData {
         if (!spawnBlocker(level,rule,placement).isEmpty()) return false;
         var build = PhotomancyRespawnBridge.createSpawn(rule.template.template(), new CompoundTag(), placement.origin(), null);
         var cleared=new LinkedHashMap<BlockPos,BlockState>();
+        dev.sablelife.heart.HeartBlockEntity core = null;
         int flags=Block.UPDATE_CLIENTS|Block.UPDATE_KNOWN_SHAPE;
         try {
             for(var entry:placement.clearing().entrySet()){
@@ -475,12 +476,13 @@ public final class WildEncounters extends SavedData {
                 cleared.put(entry.getKey(),entry.getValue());
             }
             if (!build.step(level).equals("DONE")) throw new IllegalStateException("Incomplete placement");
-            var core=rule.activateCore?build.heart(level):null;
+            SableBodyProbe.invalidate(level);
+            core=rule.activateCore?build.heart(level):null;
             if(rule.activateCore){
                 if(core==null)throw new IllegalStateException("Cannot find blueprint core");
                 core.relations().faction(faction(level,rule));
-                if(!core.activateForRespawn())throw new IllegalStateException("Cannot activate blueprint core");
                 build.captureOwnership(core);
+                if(!core.activateAfterBlueprintPlacement(build.bodies().size()))throw new IllegalStateException("Cannot activate blueprint core");
             }
             long now = level.getServer().overworld().getGameTime();
             var encounter=new Encounter();
@@ -501,6 +503,10 @@ public final class WildEncounters extends SavedData {
                 try {
                     if (container != null && container.getSubLevel(id) instanceof ServerSubLevel body && !body.isRemoved()) StructureRemovalApi.remove(level, body);
                 } catch (RuntimeException rollback) { failure.addSuppressed(rollback); }
+            }
+            if (core != null) {
+                BodyOwnership.get(level).release(core.creatureId());
+                LifeLifecycle.get(level.getServer()).cancel(core.creatureId());
             }
             cleared.forEach((pos,state)->{if(level.getBlockState(pos).isAir())level.setBlock(pos,state,flags);});
             LogUtils.getLogger().warn("Wild encounter placement failed", failure);

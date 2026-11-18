@@ -73,7 +73,7 @@ final class AddonModuleRuntime {
                     active.put(module.id(), instance);
                 }
                 if (generation == currentGeneration) instance.behavior().onTick(context);
-            } catch (RuntimeException exception) {
+            } catch (RuntimeException | LinkageError exception) {
                 LogUtils.getLogger().error("Addon module {} failed for {}", module.type(), module.id(), exception);
                 if (generation == currentGeneration) failed.add(module.id());
                 stop(active.remove(module.id()));
@@ -107,7 +107,7 @@ final class AddonModuleRuntime {
         if (instance == null) return;
         try {
             instance.behavior().onStop(instance.context());
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | LinkageError exception) {
             LogUtils.getLogger().error("Stopping addon module {} failed", instance.context().moduleId(), exception);
         }
     }

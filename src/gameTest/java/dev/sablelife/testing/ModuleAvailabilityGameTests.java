@@ -178,7 +178,9 @@ public final class ModuleAvailabilityGameTests {
         author.setGameMode(net.minecraft.world.level.GameType.SURVIVAL);author.setPos(SableBodyProbe.toWorld(h.getLevel(),core.getBlockPos().getCenter()));
         var menu=new HeartDashboardMenu(1,author.getInventory(),core);var previous=new HashMap<String,Boolean>();
         try{
-            h.assertTrue(RedstoneCorePolicy.TYPES.size()==17,"Expected seventeen supported modules");
+            h.assertTrue(RedstoneCorePolicy.TYPES.size()==19
+                    &&RedstoneCorePolicy.TYPES.containsAll(List.of("propulsion","motion_damping")),
+                    "Expected nineteen supported modules including Propulsion and Motion Damping");
             for(String type:RedstoneCorePolicy.OPTIONAL_TYPES){
                 var option=setting(true,type);previous.put(type,option.get());
                 h.assertTrue(option.get()&&offered(core,type),"Presentation module disabled by default: "+type);

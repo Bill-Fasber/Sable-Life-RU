@@ -22,7 +22,7 @@ import java.util.List;
 @GameTestHolder("sablelife_core_ui_tests")
 @PrefixGameTestTemplate(false)
 public final class HeartGameTests {
-    public HeartGameTests() {}
+    public HeartGameTests(net.neoforged.bus.api.IEventBus bus) { LifecycleGameTests.BLOCKS.register(bus); }
 
     @GameTest(template = "empty", batch="audit_heartgametests_placedheartpersistsconfigurationandrejectsgroundactivation")
     public static void placedHeartPersistsConfigurationAndRejectsGroundActivation(GameTestHelper helper) {

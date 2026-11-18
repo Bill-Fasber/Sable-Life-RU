@@ -33,7 +33,20 @@ public final class AutoFacingGeometry {
         double radius=1;for(var b:bodies){var box=b.box();for(int x=0;x<2;x++)for(int y=0;y<2;y++)for(int z=0;z<2;z++)radius=Math.max(radius,pivot.distanceTo(new Vec3(x==0?box.minX:box.maxX,y==0?box.minY:box.maxY,z==0?box.minZ:box.maxZ)));}return radius;
     }
     public static boolean clearTurn(net.minecraft.server.level.ServerLevel level,List<LinearMovementGeometry.Body> bodies,Vec3 pivot,Quaterniond turn,double radius){
-        double angle=2*Math.acos(Math.min(1,Math.abs(turn.w)));int steps=Math.clamp((int)Math.ceil(angle*radius/.25),1,16);
+        return clearTurn(level,bodies,pivot,turn,Math.clamp(turnSteps(turn,radius),1,16));
+    }
+    static boolean clearCombinedTurn(net.minecraft.server.level.ServerLevel level, List<LinearMovementGeometry.Body> bodies,
+                                     Vec3 pivot, Quaterniond turn, double radius) {
+        // Both controllers may contribute up to a full sweep. Keep the same sampling distance.
+        int steps = turnSteps(turn, radius);
+        return steps <= 32 && clearTurn(level, bodies, pivot, turn, Math.max(1, steps));
+    }
+    private static int turnSteps(Quaterniond turn, double radius) {
+        double angle = 2 * Math.acos(Math.min(1, Math.abs(turn.w)));
+        return (int) Math.ceil(angle * radius / .25 - 1e-9);
+    }
+    private static boolean clearTurn(net.minecraft.server.level.ServerLevel level, List<LinearMovementGeometry.Body> bodies,
+                                     Vec3 pivot, Quaterniond turn, int steps) {
         for(int i=1;i<=steps;i++)if(!LinearMovementGeometry.clear(level,rotated(bodies,pivot,new Quaterniond().slerp(turn,i/(double)steps)),Vec3.ZERO,Vec3.ZERO,false))return false;
         return true;
     }

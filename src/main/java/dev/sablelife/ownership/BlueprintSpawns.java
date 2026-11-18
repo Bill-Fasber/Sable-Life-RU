@@ -15,11 +15,13 @@ import net.neoforged.neoforge.event.tick.ServerTickEvent;
 
 /** Operator-approved templates and detached one-shot jobs; no template NBT is sent in menu snapshots. */
 public final class BlueprintSpawns extends SavedData {
+    public static final String SAVED_REFERENCES = "sablelife:blueprint_spawn_refs";
     private static final int LIMIT=32;
     private static final class Entry {
         UUID module,owner;String name="",phase="ready",error="";CompoundTag template=new CompoundTag(),progress=new CompoundTag();
         int life,redstone,blocks,count,remaining;long next;boolean armed=true,death,activate,detached;
         ResourceLocation dimension;Vec3 position;org.joml.Quaterniond rotation;transient ArenaRespawns.Build build;transient BlueprintSpawnPlacement.Geometry geometry;
+        UUID arena;int arenaRole;
     }
     private final Map<UUID,Entry> entries=new LinkedHashMap<>();
     public static boolean available(){return PhotomancyCompatibility.available();}
@@ -90,15 +92,87 @@ public final class BlueprintSpawns extends SavedData {
         for(var e:List.copyOf(data.entries.values()))if(e.owner.equals(heart.creatureId())){
             if(e.build!=null){var container=dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);for(var id:e.build.bodies())if(container!=null&&container.getSubLevel(id) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel body&&!body.isRemoved())dev.sablelife.compat.StructureRemovalApi.remove(level,body);}
             var module=heart.modules().find(e.module);if(module==null||!module.type().equals("blueprint_spawn")){data.entries.remove(e.module);continue;}
-            e.owner=nextOwner;e.phase="ready";e.error="";e.build=null;e.progress=new CompoundTag();e.position=null;e.rotation=null;e.remaining=0;e.count=0;e.next=0;e.armed=true;e.death=false;e.detached=false;
+            e.owner=nextOwner;e.phase="ready";e.error="";e.build=null;e.progress=new CompoundTag();e.position=null;e.rotation=null;e.remaining=0;e.count=0;e.next=0;e.armed=true;e.death=false;e.detached=false;e.arena=null;e.arenaRole=0;
         }data.setDirty();
     }
     public static void release(HeartBlockEntity heart){if(heart.getLevel() instanceof ServerLevel l){var data=get(l.getServer());if(data.entries.values().removeIf(e->e.owner.equals(heart.creatureId())))data.setDirty();}}
     public static List<String> files(ServerPlayer player){return available()&&player.canUseGameMasterBlocks()?SpawnTemplateBridge.files(player.server):List.of();}
+    public static boolean canEnableCoreActivation(HeartBlockEntity heart, VirtualModule module) {
+        if (!(heart.getLevel() instanceof ServerLevel level)) return false;
+        var entry = get(level.getServer()).entries.get(module.id());
+        return entry == null || !entry.owner.equals(heart.creatureId()) || (entry.life == 1 && entry.redstone == 0);
+    }
     public static boolean select(ServerPlayer player,HeartBlockEntity heart,VirtualModule module,String name){if(!available()||!player.canUseGameMasterBlocks()||!heart.canEdit(player)||module==null||!module.type().equals("blueprint_spawn")||!ModuleAvailability.enabled(heart,module))return false;try{return install(heart,module,name,SpawnTemplateBridge.read(player.server,name));}catch(java.io.IOException|RuntimeException ex){player.displayClientMessage(net.minecraft.network.chat.Component.translatable("blueprint_spawn.sablelife.load_failed",ex.getMessage()==null?ex.getClass().getSimpleName():ex.getMessage()),false);return false;}}
     public static boolean install(HeartBlockEntity heart,VirtualModule module,String name,SpawnTemplateBridge.Info info){reconcile(heart);var data=get(((ServerLevel)heart.getLevel()).getServer());var old=data.entries.get(module.id());if(old!=null&&List.of("queued","building").contains(old.phase))return false;if(old==null&&data.entries.size()>=LIMIT)throw new IllegalStateException("limit_records");long bytes=info.template().sizeInBytes();for(var e:data.entries.values())if(e!=old)bytes+=e.template.sizeInBytes();ArenaRespawnLimits.check("world_templates",bytes,dev.sablelife.SableLifeServerConfig.arenaWorldTemplateBytes());var e=new Entry();e.owner=heart.creatureId();e.module=module.id();e.name=name;e.template=info.template().copy();e.life=info.life();e.redstone=info.redstone();e.blocks=info.blocks();data.entries.put(e.module,e);if(!info.canActivate())module.edit("spawnActivate",0,"");data.setDirty();heart.modules().changed();heart.setChanged();return true;}
+    public static CompoundTag references(HeartBlockEntity heart) {
+        var result = new CompoundTag();
+        if (!(heart.getLevel() instanceof ServerLevel level)) return result;
+        for (var entry : get(level.getServer()).entries.values()) {
+            if (entry.owner.equals(heart.creatureId()) && heart.modules().find(entry.module) != null)
+                result.putString(entry.module.toString(), entry.name);
+        }
+        return result;
+    }
+    public static void restoreReference(HeartBlockEntity heart, VirtualModule module, String name) {
+        if (name.isBlank() || name.length() > 80) return;
+        try {
+            var level = (ServerLevel) heart.getLevel();
+            var data = get(level.getServer());
+            if (data.entries.containsKey(module.id()) || data.entries.size() >= LIMIT) return;
+            install(heart,module,name,SpawnTemplateBridge.read(level.getServer(),name));
+        } catch (java.io.IOException | RuntimeException failure) {
+            com.mojang.logging.LogUtils.getLogger().warn("Could not restore arena blueprint selection '{}' for module {}", name, module.id());
+        }
+    }
     public static boolean clear(ServerPlayer player,HeartBlockEntity heart,VirtualModule module){if(!player.canUseGameMasterBlocks()||!heart.canEdit(player))return false;var data=get(player.server);var e=data.entries.get(module.id());if(e==null||!e.owner.equals(heart.creatureId())||List.of("queued","building").contains(e.phase))return false;data.entries.remove(module.id());data.setDirty();return true;}
-    private boolean queue(HeartBlockEntity heart,VirtualModule m,boolean death){var e=entries.get(m.id());var point=currentDestination(heart,m,e);if(e==null||!e.owner.equals(heart.creatureId())||!List.of("ready","done").contains(e.phase)||e.count>=m.value("spawnLimit")||heart.getLevel().getGameTime()<e.next||point==null)return false;if(m.value("spawnActivate")==1&&(e.life!=1||e.redstone!=0)){e.error="activation";setDirty();return false;}e.position=point.position();e.dimension=point.dimension();e.rotation=point.rotation()==null?null:new org.joml.Quaterniond(point.rotation());e.remaining=(int)m.value("spawnDelay");e.activate=m.value("spawnActivate")==1;e.death=death;e.phase="queued";e.error="";e.progress=new CompoundTag();e.next=heart.getLevel().getGameTime()+(long)m.value("spawnCooldown");setDirty();return true;}
+    private boolean queue(HeartBlockEntity heart,VirtualModule m,boolean death){
+        var e=entries.get(m.id());
+        if(e==null||!e.owner.equals(heart.creatureId())||!List.of("ready","done").contains(e.phase)
+                ||e.count>=m.value("spawnLimit")||heart.getLevel().getGameTime()<e.next)return false;
+        var point=currentDestination(heart,m,e);
+        if(point==null)return false;
+        boolean activate=m.value("spawnActivate")==1;
+        int role=(int)m.value("spawnArenaRole");
+        if((activate||role!=0)&&(e.life!=1||e.redstone!=0)||role!=0&&!activate){
+            e.error="activation";setDirty();return false;
+        }
+        UUID arena=role==0?null:ArenaRespawns.reserveBlueprint(heart,m,role,death,point);
+        if(role!=0&&arena==null){e.error="arena";setDirty();return false;}
+        e.arena=arena;e.arenaRole=role;
+        e.position=point.position();e.dimension=point.dimension();e.rotation=point.rotation()==null?null:new org.joml.Quaterniond(point.rotation());
+        e.remaining=(int)m.value("spawnDelay");e.activate=activate;e.death=death;e.phase="queued";e.error="";e.progress=new CompoundTag();
+        e.next=heart.getLevel().getGameTime()+(long)m.value("spawnCooldown");setDirty();return true;
+    }
+    static boolean pendingArenaBlueprint(MinecraftServer server,UUID id){
+        var entry=get(server).entries.get(id);
+        return available()&&ModuleAvailability.enabled(false,"blueprint_spawn")&&entry!=null
+                && List.of("queued","building").contains(entry.phase);
+    }
+    static void cancelArenaBlueprints(MinecraftServer server, UUID arena, UUID onlyJob) {
+        var data=get(server);
+        for (var entry : List.copyOf(data.entries.values())) {
+            if (arena.equals(entry.arena) && (onlyJob==null || onlyJob.equals(entry.module)))
+                data.cancelArenaBlueprint(server,entry);
+        }
+    }
+    private void cancelArenaBlueprint(MinecraftServer server, Entry entry) {
+        if(!entry.progress.isEmpty()&&!available())return;
+        var level=server.getLevel(ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,entry.dimension));
+        if(level==null)return;
+        if(!entry.progress.isEmpty()) {
+            var build=entry.build==null?PhotomancyRespawnBridge.createSpawn(entry.template,entry.progress,entry.position,entry.rotation):entry.build;
+            ArenaBuildTicks.release(level,build.bodies());
+            var container=dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+            if(container!=null)for(var id:build.bodies())if(container.getSubLevel(id) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel body&&!body.isRemoved())
+                dev.sablelife.compat.StructureRemovalApi.remove(level,body);
+        }
+        if(entry.death||entry.detached)entries.remove(entry.module);
+        else {
+            entry.phase="ready";entry.build=null;entry.progress=new CompoundTag();entry.remaining=0;
+            entry.arena=null;entry.arenaRole=0;entry.error="";
+        }
+        setDirty();
+    }
     public static void tickCore(HeartBlockEntity heart){if(!(heart.getLevel() instanceof ServerLevel l))return;var data=get(l.getServer());for(var m:heart.modules().all())if(m.type().equals("blueprint_spawn")){var e=data.entries.get(m.id());if(e==null||!e.owner.equals(heart.creatureId()))continue;if(m.value("spawnEvent")!=0){e.armed=true;continue;}boolean powered=HeartModules.triggered(m,heart)&&heart.wireless().master();if(!powered){if(!e.armed){e.armed=true;data.setDirty();}}else if(e.armed){e.armed=false;data.queue(heart,m,false);data.setDirty();}}}
     public static void death(HeartBlockEntity heart){if(!available()||!(heart.getLevel() instanceof ServerLevel l)||!heart.wireless().master())return;var data=get(l.getServer());for(var m:heart.modules().all())if(m.type().equals("blueprint_spawn")&&m.value("spawnEvent")==1&&m.enabled()&&ModuleAvailability.enabled(heart,m))data.queue(heart,m,true);if(data.entries.values().removeIf(e->e.owner.equals(heart.creatureId())&&List.of("ready","done").contains(e.phase)))data.setDirty();}
     public static void deathTrigger(HeartBlockEntity heart,List<dev.sablelife.heart.DeathSignals.Pulse> pulses){
@@ -114,7 +188,71 @@ public final class BlueprintSpawns extends SavedData {
     }
     private static boolean loaded(ServerLevel level,AABB box){if(!Double.isFinite(box.getSize())||box.getXsize()>512||box.getZsize()>512||box.minY<level.getMinBuildHeight()||box.maxY>level.getMaxBuildHeight()||!level.getWorldBorder().isWithinBounds(box))return false;int x0=((int)Math.floor(box.minX))>>4,x1=((int)Math.floor(box.maxX))>>4,z0=((int)Math.floor(box.minZ))>>4,z1=((int)Math.floor(box.maxZ))>>4;if((long)(x1-x0+1)*(z1-z0+1)>256)return false;for(int x=x0;x<=x1;x++)for(int z=z0;z<=z1;z++)if(!level.hasChunk(x,z))return false;return true;}
     public static void tick(ServerTickEvent.Post event){get(event.getServer()).advance(event.getServer());}
-    public void advance(MinecraftServer server){if(!available()||!ModuleAvailability.enabled(false,"blueprint_spawn"))return;int builds=1;for(var e:List.copyOf(entries.values())){if(!List.of("queued","building").contains(e.phase))continue;var level=server.getLevel(ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,e.dimension));if(level==null)continue;try{if(e.build==null)e.build=PhotomancyRespawnBridge.createSpawn(e.template,e.progress,e.position,e.rotation);if(!loaded(level,e.build.bounds()))continue;if(e.remaining>0){e.remaining--;setDirty();continue;}if(e.death&&!LifeLifecycle.get(server).finished(e.owner))continue;if(builds--<=0)continue;e.phase="building";e.progress=e.build.save();setDirty();String status=e.build.step(level);e.progress=e.build.save();setDirty();if(!status.equals("DONE"))continue;dev.sablelife.compat.sable.SableBodyProbe.invalidate(level);if(e.activate){var core=e.build.heart(level);if(core==null||!core.activateForRespawn())throw new IllegalStateException("activation");e.build.captureOwnership(core);}e.count++;e.phase="done";e.build=null;e.progress=new CompoundTag();setDirty();if(e.detached||e.death||LifeLifecycle.get(server).isDying(e.owner)||LifeLifecycle.get(server).finished(e.owner))entries.remove(e.module);}catch(RuntimeException failure){if(e.build!=null){e.progress=e.build.save();var container=dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);for(var id:e.build.bodies())try{if(container!=null&&container.getSubLevel(id) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel body)dev.sablelife.compat.StructureRemovalApi.remove(level,body);}catch(RuntimeException cleanup){failure.addSuppressed(cleanup);}}e.phase="failed";e.error=failure.getMessage()==null?"failed":failure.getMessage();setDirty();com.mojang.logging.LogUtils.getLogger().error("Blueprint generation {} failed without automatic retry",e.module,failure);}}}
-    @Override public CompoundTag save(CompoundTag t,HolderLookup.Provider registries){var list=new ListTag();for(var e:entries.values()){var r=new CompoundTag();r.putUUID("Module",e.module);r.putUUID("Owner",e.owner);r.putString("Name",e.name);r.putString("Phase",e.phase);r.putString("Error",e.error);r.put("Template",e.template);r.put("Progress",e.progress);r.putInt("Life",e.life);r.putInt("Redstone",e.redstone);r.putInt("Blocks",e.blocks);r.putInt("Count",e.count);r.putInt("Remaining",e.remaining);r.putLong("Next",e.next);r.putBoolean("Armed",e.armed);r.putBoolean("Death",e.death);r.putBoolean("Detached",e.detached);r.putBoolean("Activate",e.activate);if(e.position!=null){r.putString("Dimension",e.dimension.toString());r.putDouble("X",e.position.x);r.putDouble("Y",e.position.y);r.putDouble("Z",e.position.z);if(e.rotation!=null){var rotation=new ListTag();for(double v:new double[]{e.rotation.x,e.rotation.y,e.rotation.z,e.rotation.w})rotation.add(DoubleTag.valueOf(v));r.put("Rotation",rotation);}}list.add(r);}t.put("Entries",list);return t;}
-    public static BlueprintSpawns load(CompoundTag t,HolderLookup.Provider registries){var data=new BlueprintSpawns();long bytes=0;for(var v:t.getList("Entries",10)){var r=(CompoundTag)v;if(data.entries.size()>=LIMIT||!r.hasUUID("Module")||!r.hasUUID("Owner"))continue;var template=r.getCompound("Template");bytes+=template.sizeInBytes();if(bytes>dev.sablelife.SableLifeServerConfig.arenaWorldTemplateBytes())break;var e=new Entry();e.module=r.getUUID("Module");e.owner=r.getUUID("Owner");e.name=r.getString("Name");e.phase=r.getString("Phase");e.error=r.getString("Error");e.template=template.copy();e.progress=r.getCompound("Progress").copy();e.life=r.getInt("Life");e.redstone=r.getInt("Redstone");e.blocks=r.getInt("Blocks");e.count=Math.max(0,r.getInt("Count"));e.remaining=Math.clamp(r.getInt("Remaining"),0,72000);e.next=r.getLong("Next");e.armed=r.getBoolean("Armed");e.death=r.getBoolean("Death");e.detached=r.getBoolean("Detached");e.activate=r.getBoolean("Activate");if(r.contains("Rotation")){var q=r.getList("Rotation",6);if(q.size()!=4)continue;e.rotation=new org.joml.Quaterniond(q.getDouble(0),q.getDouble(1),q.getDouble(2),q.getDouble(3));if(!Double.isFinite(e.rotation.lengthSquared())||e.rotation.lengthSquared()<1e-12)continue;e.rotation.normalize();}if(r.contains("Dimension")){e.dimension=ResourceLocation.tryParse(r.getString("Dimension"));e.position=new Vec3(r.getDouble("X"),r.getDouble("Y"),r.getDouble("Z"));if(e.dimension==null||!Double.isFinite(e.position.lengthSqr()))continue;}if(List.of("queued","building").contains(e.phase)&&e.position==null)continue;if(e.phase.equals("building")){e.phase="failed";e.error="interrupted";}data.entries.put(e.module,e);}return data;}
+    public void advance(MinecraftServer server) {
+        if (!available() || !ModuleAvailability.enabled(false, "blueprint_spawn")) return;
+        int builds = 1;
+        for (var e : List.copyOf(entries.values())) {
+            if (entries.get(e.module)!=e || !List.of("queued", "building").contains(e.phase)) continue;
+            var level = server.getLevel(ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION, e.dimension));
+            if (level == null) continue;
+            HeartBlockEntity core = null;
+            try {
+                if(e.arena!=null&&!ArenaRespawns.acceptsBlueprint(level,e.arena,e.module,e.arenaRole)){
+                    cancelArenaBlueprint(server,e);
+                    continue;
+                }
+                if (e.build == null) e.build = PhotomancyRespawnBridge.createSpawn(e.template, e.progress, e.position, e.rotation);
+                if (!loaded(level, e.build.bounds())) continue;
+                if (e.remaining > 0) { e.remaining--; setDirty(); continue; }
+                if (e.death && !LifeLifecycle.get(server).finished(e.owner)) continue;
+                if (builds-- <= 0) continue;
+                e.phase = "building";
+                e.progress = e.build.save();
+                setDirty();
+                String status = e.build.step(level);
+                e.progress = e.build.save();
+                setDirty();
+                if (!status.equals("DONE")) continue;
+                dev.sablelife.compat.sable.SableBodyProbe.invalidate(level);
+                if (e.activate) {
+                    core = e.build.heart(level);
+                    if (core == null) throw new IllegalStateException("activation");
+                    e.build.captureOwnership(core);
+                    if (!core.activateAfterBlueprintPlacement(e.build.bodies().size())) throw new IllegalStateException("activation");
+                    if(e.arena!=null){
+                        ArenaRespawns.blueprintPlaced(level,e.arena,e.module,e.arenaRole,core);
+                        if(e.arenaRole==ArenaRespawns.NEXT_STAGE)e.build.restoreBlueprintSpawns(core,new CompoundTag(),true);
+                    }
+                }
+                e.count++;
+                e.phase = "done";
+                e.arena=null;e.arenaRole=0;
+                e.build = null;
+                e.progress = new CompoundTag();
+                setDirty();
+                if (e.detached || e.death || LifeLifecycle.get(server).isDying(e.owner) || LifeLifecycle.get(server).finished(e.owner)) entries.remove(e.module);
+            } catch (RuntimeException failure) {
+                if (e.build != null) {
+                    e.progress = e.build.save();
+                    var container = dev.ryanhcode.sable.api.sublevel.SubLevelContainer.getContainer(level);
+                    for (var id : e.build.bodies()) {
+                        try {
+                            if (container != null && container.getSubLevel(id) instanceof dev.ryanhcode.sable.sublevel.ServerSubLevel body)
+                                dev.sablelife.compat.StructureRemovalApi.remove(level, body);
+                        } catch (RuntimeException cleanup) { failure.addSuppressed(cleanup); }
+                    }
+                }
+                if (core != null) {
+                    BodyOwnership.get(level).release(core.creatureId());
+                    LifeLifecycle.get(server).cancel(core.creatureId());
+                }
+                e.phase = "failed";
+                e.error = failure.getMessage() == null ? "failed" : failure.getMessage();
+                setDirty();
+                com.mojang.logging.LogUtils.getLogger().error("Blueprint generation {} failed without automatic retry", e.module, failure);
+            }
+        }
+    }
+    @Override public CompoundTag save(CompoundTag t,HolderLookup.Provider registries){var list=new ListTag();for(var e:entries.values()){var r=new CompoundTag();r.putUUID("Module",e.module);r.putUUID("Owner",e.owner);r.putString("Name",e.name);r.putString("Phase",e.phase);r.putString("Error",e.error);r.put("Template",e.template);r.put("Progress",e.progress);r.putInt("Life",e.life);r.putInt("Redstone",e.redstone);r.putInt("Blocks",e.blocks);r.putInt("Count",e.count);r.putInt("Remaining",e.remaining);r.putLong("Next",e.next);r.putBoolean("Armed",e.armed);r.putBoolean("Death",e.death);r.putBoolean("Detached",e.detached);r.putBoolean("Activate",e.activate);if(e.arena!=null){r.putUUID("Arena",e.arena);r.putInt("ArenaRole",e.arenaRole);}if(e.position!=null){r.putString("Dimension",e.dimension.toString());r.putDouble("X",e.position.x);r.putDouble("Y",e.position.y);r.putDouble("Z",e.position.z);if(e.rotation!=null){var rotation=new ListTag();for(double v:new double[]{e.rotation.x,e.rotation.y,e.rotation.z,e.rotation.w})rotation.add(DoubleTag.valueOf(v));r.put("Rotation",rotation);}}list.add(r);}t.put("Entries",list);return t;}
+    public static BlueprintSpawns load(CompoundTag t,HolderLookup.Provider registries){var data=new BlueprintSpawns();long bytes=0;for(var v:t.getList("Entries",10)){var r=(CompoundTag)v;if(data.entries.size()>=LIMIT||!r.hasUUID("Module")||!r.hasUUID("Owner"))continue;var template=r.getCompound("Template");bytes+=template.sizeInBytes();if(bytes>dev.sablelife.SableLifeServerConfig.arenaWorldTemplateBytes())break;var e=new Entry();e.module=r.getUUID("Module");e.owner=r.getUUID("Owner");e.name=r.getString("Name");e.phase=r.getString("Phase");e.error=r.getString("Error");e.template=template.copy();e.progress=r.getCompound("Progress").copy();e.life=r.getInt("Life");e.redstone=r.getInt("Redstone");e.blocks=r.getInt("Blocks");e.count=Math.max(0,r.getInt("Count"));e.remaining=Math.clamp(r.getInt("Remaining"),0,72000);e.next=r.getLong("Next");e.armed=r.getBoolean("Armed");e.death=r.getBoolean("Death");e.detached=r.getBoolean("Detached");e.activate=r.getBoolean("Activate");if(r.hasUUID("Arena")){e.arena=r.getUUID("Arena");e.arenaRole=Math.clamp(r.getInt("ArenaRole"),1,2);}if(r.contains("Rotation")){var q=r.getList("Rotation",6);if(q.size()!=4)continue;e.rotation=new org.joml.Quaterniond(q.getDouble(0),q.getDouble(1),q.getDouble(2),q.getDouble(3));if(!Double.isFinite(e.rotation.lengthSquared())||e.rotation.lengthSquared()<1e-12)continue;e.rotation.normalize();}if(r.contains("Dimension")){e.dimension=ResourceLocation.tryParse(r.getString("Dimension"));e.position=new Vec3(r.getDouble("X"),r.getDouble("Y"),r.getDouble("Z"));if(e.dimension==null||!Double.isFinite(e.position.lengthSqr()))continue;}if(List.of("queued","building").contains(e.phase)&&e.position==null)continue;if(e.phase.equals("building")){e.phase="failed";e.error="interrupted";}data.entries.put(e.module,e);}return data;}
 }

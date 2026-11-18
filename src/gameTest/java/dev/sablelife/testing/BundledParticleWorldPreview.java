@@ -1,6 +1,7 @@
 package dev.sablelife.testing;
 import dev.sablelife.client.BundledParticles;
 import dev.sablelife.module.ModuleParticles;
+import dev.sablelife.module.ParticleSpriteStyle;
 import net.minecraft.client.*;
 import net.minecraft.client.particle.*;
 import net.minecraft.core.registries.Registries;
@@ -19,6 +20,9 @@ public final class BundledParticleWorldPreview {
     private static final String[] ids={"sablelife:arc","sablelife:smoke","sablelife:energy_mote","sablelife:branching_arc","sablelife:spark","sablelife:light_ring","sablelife:inward_ring","sablelife:crescent","sablelife:soft_fog","sablelife:starburst","sablelife:random_starburst"};
     private static final int[] colors={0x36BFFF,0xBA60E8,0x62FF72,0xE196FF,0xFFBB44,0x60FFFF,0xFF60BB,0xA0D0FF,0x8080FF,0xFFFF70,0xFF80D0};
     private static final Set<Particle> observed=Collections.newSetFromMap(new IdentityHashMap<>());
+    private static final Set<Particle> spritesObserved=Collections.newSetFromMap(new IdentityHashMap<>());
+    private static final Set<String> ellipsisFrames=new HashSet<>();
+    private static final int CUSTOM_SPRITE_COLOR=0x43FF94;
     private static double field(Particle p,Class<?> owner,String key)throws Exception{var f=owner.getDeclaredField(key);f.setAccessible(true);return ((Number)f.get(p)).doubleValue();}
     private static List<org.joml.Vector3f> vertices(Particle p,float partial){
         var points=new ArrayList<org.joml.Vector3f>();
@@ -50,6 +54,31 @@ public final class BundledParticleWorldPreview {
         if(custom&&Math.abs(field(p,SingleQuadParticle.class,"quadSize")-(group==0?1.3:group==1?.7:group==2?.18:group==4?.8:1.4))>1e-5)throw new AssertionError("Size override lost");
         var f=TextureSheetParticle.class.getDeclaredField("sprite");f.setAccessible(true);
         if(((net.minecraft.client.renderer.texture.TextureAtlasSprite)f.get(p)).contents().name().getPath().contains("missing"))throw new AssertionError("Missing sprite");
+    }
+    private static void observeSprite(Particle particle)throws Exception {
+        if (!(particle instanceof BundledParticles.AnimatedSprite sprite)) return;
+        var styleField=BundledParticles.AnimatedSprite.class.getDeclaredField("style");
+        styleField.setAccessible(true);
+        var style=(ParticleSpriteStyle)styleField.get(sprite);
+        var spriteField=TextureSheetParticle.class.getDeclaredField("sprite");
+        spriteField.setAccessible(true);
+        var name=((net.minecraft.client.renderer.texture.TextureAtlasSprite)spriteField.get(sprite)).contents().name();
+        if (style==ParticleSpriteStyle.ELLIPSIS) ellipsisFrames.add(name.getPath());
+        if (!spritesObserved.add(sprite)) return;
+        if (!name.getPath().contains(style.path())) throw new AssertionError("Wrong atlas texture: "+name);
+        boolean custom=field(sprite,Particle.class,"y")>84;
+        int rgb=custom?CUSTOM_SPRITE_COLOR:style.color();
+        String[] channels={"rCol","gCol","bCol"};
+        for (int i=0;i<channels.length;i++) {
+            double expected=((rgb>>(16-8*i))&255)/255.;
+            if (Math.abs(field(sprite,Particle.class,channels[i])-expected)>1e-5) throw new AssertionError("Sprite RGB changed: "+name);
+        }
+        if (field(sprite,Particle.class,"lifetime")!=(custom?54:style.lifetime())
+                ||Math.abs(field(sprite,SingleQuadParticle.class,"quadSize")-style.size()*(custom?2:1))>1e-5)
+            throw new AssertionError("Sprite size or lifetime changed: "+name);
+        boolean translucent=sprite.getRenderType()==ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT;
+        if (translucent!=Boolean.getBoolean("sablelife.shaderParticleTests")||vertices(sprite,.5F).size()!=4)
+            throw new AssertionError("Incorrect sprite render path: "+name);
     }
     @SubscribeEvent public static void tick(ClientTickEvent.Post event)throws Exception {
         if(!Boolean.getBoolean("sablelife.bundledParticleWorldPreview"))return;var mc=Minecraft.getInstance();
@@ -101,6 +130,32 @@ public final class BundledParticleWorldPreview {
                 if(ticks==90)BundledParticleGpuCheck.run(mc);
             }
         }
-        if(ticks==130){if(observed.size()!=22||observed.stream().anyMatch(Particle::isAlive))throw new AssertionError("Native providers/network/expiry failed: "+observed.size());System.out.println("Bundled particles world passed: 11 native providers, default and custom network paths, RGB/Life/Size, real sprites, bounded expiry; shader-aware particle batch, stable starburst, lightning render continuity");mc.stop();}
+        if(ticks==130){if(observed.size()!=22||observed.stream().anyMatch(Particle::isAlive))throw new AssertionError("Native providers/network/expiry failed: "+observed.size());System.out.println("Bundled particles world passed: 11 native providers, default and custom network paths, RGB/Life/Size, real sprites, bounded expiry; shader-aware particle batch, stable starburst, lightning render continuity");}
+        if(ticks==134)mc.getSingleplayerServer().execute(()->{
+            var server=mc.getSingleplayerServer();
+            var level=server.overworld();
+            server.getPlayerList().getPlayers().getFirst().teleportTo(level,0,82,10,180,0);
+            for(var style:ParticleSpriteStyle.values()) {
+                double x=(style.ordinal()-3)*1.45;
+                ModuleParticles.send(level,new ModuleParticles.Entry(style.id(),54,2,CUSTOM_SPRITE_COLOR),x,85,3,1,0,0,0,0);
+                ModuleParticles.send(level,new ModuleParticles.Entry(style.id(),0,1),x,82,3,1,0,0,0,0);
+            }
+        });
+        if(ticks>=134&&ticks<=194){
+            var active=ParticleEngine.class.getDeclaredField("particles");active.setAccessible(true);
+            for(var queue:((Map<?,?>)active.get(mc.particleEngine)).values())for(var particle:(Collection<?>)queue)observeSprite((Particle)particle);
+        }
+        if(ticks==142||ticks==161){
+            var folder=mc.gameDirectory.toPath().resolve("screenshots");
+            java.nio.file.Files.createDirectories(folder);
+            String renderer=Boolean.getBoolean("sablelife.shaderParticleTests")?"shaders":"vanilla";
+            try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(folder.resolve("symbol-particles-"+renderer+"-"+ticks+".png"));}
+        }
+        if(ticks==202){
+            if(spritesObserved.size()!=14||spritesObserved.stream().anyMatch(Particle::isAlive)||ellipsisFrames.size()!=3)
+                throw new AssertionError("Sprite providers or expiry failed: "+spritesObserved.size()+", ellipsis frames "+ellipsisFrames);
+            System.out.println("Animated particle sprites passed: 7 default and 7 custom network emissions, RGB/Life/Size, atlas, three ellipsis frames and expiry");
+            mc.stop();
+        }
     }
 }

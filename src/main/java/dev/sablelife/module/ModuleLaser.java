@@ -20,6 +20,7 @@ public final class ModuleLaser {
         final LaserBlockCut.Front cut=new LaserBlockCut.Front();
         int hits;
         boolean casting, firing;
+        UUID moveTarget;
         LivingEntity target;
         List<State> beams = List.of();
         Vec3 trackedDirection, aimPoint;
@@ -58,12 +59,17 @@ public final class ModuleLaser {
         return ModuleTargets.matches(e,m);
     }
     public static List<LivingEntity> acquireTargets(ServerLevel level, HeartBlockEntity heart, VirtualModule m, Vec3 start) {
+        return acquireTargets(level, heart, m, start, ModuleTargets.attackTarget(heart, m));
+    }
+
+    private static List<LivingEntity> acquireTargets(ServerLevel level, HeartBlockEntity heart, VirtualModule m, Vec3 start,
+                                                     UUID preferredTarget) {
         double range = m.value("beamLength");
-        return ModuleTargets.query(level, heart.creatureId(), new AABB(start, start).inflate(range), e -> eligible(e, m))
-                .stream().filter(e -> e.getBoundingBox().getCenter().distanceToSqr(start) <= range * range
-                        && ModuleTargets.visible(level, heart.creatureId(), start, e))
-                .sorted(ModuleTargets.comparator(heart,e -> e.getBoundingBox().getCenter().distanceToSqr(start)))
-                .limit(m.value("targetMultiple") == 1 ? 64 : 1).toList();
+        return ModuleTargets.aimedTargets(level, heart, new AABB(start, start).inflate(range),
+                e -> eligible(e, m) && e.getBoundingBox().getCenter().distanceToSqr(start) <= range * range,
+                ModuleTargets.comparator(heart, e -> e.getBoundingBox().getCenter().distanceToSqr(start)),
+                e -> ModuleTargets.attackVisible(level, heart, m, start, e),
+                m.value("targetMultiple") == 1 ? 64 : 1, preferredTarget);
     }
     private static Vec3 direction(HeartBlockEntity heart, VirtualModule m, State state) {
         if(m.emitter()!=null)return m.emitter().direction();
@@ -141,7 +147,8 @@ public final class ModuleLaser {
                                     LivingEntity target, Vec3 origin, double range) {
         return target != null && target.level() == level && eligible(target, module)
                 && dev.sablelife.heart.CoreRelations.targetAllowed(level, heart.creatureId(), target)
-                && target.getBoundingBox().getCenter().distanceToSqr(origin) <= range * range;
+                && target.getBoundingBox().getCenter().distanceToSqr(origin) <= range * range
+                && ModuleTargets.attackVisible(level, heart, module, origin, target);
     }
     public static DustParticleOptions color(VirtualModule m) {
         return new DustParticleOptions(ModuleColors.vector(m,"beamColor"),(float)Math.clamp(m.value("beamWidth")*2,.2,4));
@@ -195,8 +202,7 @@ public final class ModuleLaser {
         level = server.getServer().getLevel(server.dimension()); if (level == null) return;
         long now = level.getGameTime(); var active = new HashSet<UUID>();
         for (var m : modules) {
-            if (!external && m.type().equals("laser") && heart.health().state() == dev.sablelife.heart.HeartState.ALIVE && !m.detached()
-                    && HeartModules.status(m, heart).equals("disconnected")) { m.detach(); heart.setChanged(); }
+            if (!external && m.type().equals("laser")) HeartModules.latchDetachedMark(m, heart);
             if (!m.type().equals("laser") || !external&&!HeartModules.triggered(m, heart)) continue;
             active.add(m.id()); var s = states.computeIfAbsent(m.id(), ignored -> new State());
             var origin = ModuleCombat.nozzle(heart,m);
@@ -204,8 +210,9 @@ public final class ModuleLaser {
             double range = m.value("beamLength");
             if (!s.casting) {
                 if (now < s.ready || !external&&!heart.modules().hurtTriggers.start(m)) continue;
+                s.moveTarget = tracking ? ModuleTargets.attackTarget(heart, m) : null;
                 if (tracking) {
-                    var targets = acquireTargets(level, heart, m, origin);
+                    var targets = acquireTargets(level, heart, m, origin, s.moveTarget);
                     if (targets.isEmpty()) continue;
                     s.beams = targets.stream().map(target -> { var beam = new State(); beam.target = target; return beam; }).toList();
                 } else s.beams = List.of(new State());
@@ -221,7 +228,16 @@ public final class ModuleLaser {
                 stop(m.id()); if(!external)heart.modules().hurtTriggers.completed(m); s.casting = false; s.beams = List.of(); s.ready = now + (long) m.value("interval"); continue;
             }
             if (now >= s.fireAt && !s.firing) {
-                stop(m.id()); s.firing = true; ModuleAudio.play(level,m,"fireSound",origin);
+                stop(m.id());
+                if (s.moveTarget != null && !canTrack(level, heart, m,
+                        ModuleTargets.resolve(level, s.moveTarget, heart.creatureId()), origin, range)) {
+                    if (!external) heart.modules().hurtTriggers.completed(m);
+                    s.casting = false;
+                    s.beams = List.of();
+                    s.ready = now + (long) m.value("interval");
+                    continue;
+                }
+                s.firing = true; ModuleAudio.play(level,m,"fireSound",origin);
             }
             boolean hit = s.firing && now >= s.nextHit && s.hits < m.value("beamHits");
             if (hit) { s.nextHit = now + (long) m.value("hitInterval"); s.hits++; }

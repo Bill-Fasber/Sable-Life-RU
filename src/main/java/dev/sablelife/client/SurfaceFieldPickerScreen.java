@@ -19,7 +19,8 @@ public final class SurfaceFieldPickerScreen extends Screen {
     @Override protected void init(){
         w=Math.min(460,width-16);h=Math.min(330,height-16);x=(width-w)/2;y=(height-h)/2;
         addRenderableWidget(LifeUiStyle.button(tr("back"),x+w-68,y+8,60,20,this::onClose));
-        search=addRenderableWidget(new EditBox(font,x+8,y+36,w-16,20,tr(allowed.contains("surface_field")?"field_search":"summon_search")));search.setHint(tr(allowed.contains("surface_field")?"field_search":"summon_search"));search.setMaxLength(80);search.setValue(query);
+        String searchKey = allowed.contains("surface_field") ? "field_search" : allowed.contains("sensor") ? "sensor_search" : "summon_search";
+        search=addRenderableWidget(new EditBox(font,x+8,y+36,w-16,20,tr(searchKey)));search.setHint(tr(searchKey));search.setMaxLength(80);search.setValue(query);
         search.setResponder(q->{query=q;page=0;rebuildWidgets();setFocused(search);search.setFocused(true);});
         var choices=modules.stream().filter(m->allowed.contains(m.type())&&(name(m)+" #"+(modules.indexOf(m)+1)).toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT))).toList();
         int rows=Math.max(1,(h-116)/25);page=Math.clamp(page,0,Math.max(0,(choices.size()-1)/rows));
@@ -32,5 +33,9 @@ public final class SurfaceFieldPickerScreen extends Screen {
     private void select(int index){choose.accept(index);onClose();}
     @Override public void onClose(){minecraft.setScreen(parent);}
     @Override public boolean isPauseScreen(){return false;}
-    @Override public void render(GuiGraphics g,int mx,int my,float partial){g.fill(x-2,y-2,x+w+2,y+h+2,0xFF9B614E);g.fill(x,y,x+w,y+h,0xFF242632);g.drawString(font,title,x+8,y+12,0xFFD9C4ED,false);super.render(g,mx,my,partial);}
+    @Override public void renderBackground(GuiGraphics g,int mx,int my,float partial){
+        super.renderBackground(g,mx,my,partial);
+        g.fill(x-2,y-2,x+w+2,y+h+2,0xFF9B614E);g.fill(x,y,x+w,y+h,0xFF242632);
+        g.drawString(font,title,x+8,y+12,0xFFD9C4ED,false);
+    }
 }

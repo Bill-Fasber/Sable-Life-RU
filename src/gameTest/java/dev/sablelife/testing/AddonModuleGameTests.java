@@ -3,11 +3,17 @@ package dev.sablelife.testing;
 import dev.ryanhcode.sable.api.SubLevelAssemblyHelper;
 import dev.ryanhcode.sable.companion.math.BoundingBox3i;
 import dev.sablelife.SableLife;
+import dev.sablelife.SableLifeServerConfig;
+import dev.sablelife.api.module.ModuleBehavior;
+import dev.sablelife.api.module.ModuleContext;
+import dev.sablelife.api.module.ModuleDefinition;
+import dev.sablelife.api.module.ModuleDefinition.Core;
 import dev.sablelife.api.module.ModuleRegistry;
 import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.module.HeartDashboardMenu;
 import dev.sablelife.module.MarkingSessions;
 import dev.sablelife.module.ModuleArena;
+import dev.sablelife.module.ModuleAvailability;
 import dev.sablelife.module.VirtualModule;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -15,11 +21,13 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundEvents;
 import net.minecraft.world.level.block.Blocks;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.common.ModConfigSpec;
 import net.neoforged.neoforge.event.PlayLevelSoundEvent;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
@@ -27,7 +35,9 @@ import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.function.Supplier;
 
 @GameTestHolder("sablelife_addon_module_tests")
 @PrefixGameTestTemplate(false)
@@ -41,6 +51,47 @@ public final class AddonModuleGameTests {
         var chimes = CHIMES.get();
         if (chimes != null && event.getSound() != null && event.getSound().value() == SoundEvents.NOTE_BLOCK_CHIME.value()) {
             chimes.add(event);
+        }
+    }
+
+    @GameTest(template = "combat", batch = "addon_module_core_switch")
+    public static void perCoreSwitchDoesNotEraseModules(GameTestHelper test) {
+        if (Boolean.getBoolean("sablelife.expectExampleAddon")) verifyPerCoreSwitch(test, EXAMPLE_ID);
+        if (Boolean.getBoolean("sablelife.expectDatapackConfigTest")) verifyPerCoreSwitch(test, DatapackAlarmScenario.ALARM);
+        test.succeed();
+    }
+
+    private static void verifyPerCoreSwitch(GameTestHelper test, String type) {
+        var control = core(test);
+        var module = control.modules().add(type);
+        test.assertTrue(module != null && ModuleAvailability.enabled(control, module), "Expected test module unavailable: " + type);
+        var saved = module.save();
+        var values = SableLifeServerConfig.SPEC.getValues();
+        @SuppressWarnings("unchecked")
+        var global = (ModConfigSpec.ConfigValue<List<String>>) values.get("modules.disabledAddonModules");
+        @SuppressWarnings("unchecked")
+        var local = (ModConfigSpec.ConfigValue<List<String>>) values.get("modules.redstoneCore.disabledAddonModules");
+        var previousGlobal = global.get();
+        var previousLocal = local.get();
+        try {
+            global.set(List.of());
+            local.set(List.of(type));
+            test.assertTrue(!ModuleAvailability.enabled(control, module)
+                            && ModuleAvailability.enabled(false, type)
+                            && SableLifeServerConfig.addonModuleEnabled(type, Core.SURVIVAL),
+                    "Redstone exclusion affected a different core");
+            control.modules().tick(control);
+            test.assertTrue(module.save().equals(saved), "Disabling the addon changed its saved settings");
+            local.set(List.of());
+            test.assertTrue(ModuleAvailability.enabled(control, module), "Module did not return when re-enabled");
+            global.set(List.of(type));
+            test.assertTrue(!ModuleAvailability.enabled(control, module)
+                            && !ModuleAvailability.enabled(false, type)
+                            && !SableLifeServerConfig.addonModuleEnabled(type, Core.SURVIVAL),
+                    "Legacy global exclusion failed");
+        } finally {
+            global.set(previousGlobal);
+            local.set(previousLocal);
         }
     }
 
@@ -136,6 +187,55 @@ public final class AddonModuleGameTests {
         test.assertTrue(!missing.known() && !missing.enabled() && missing.save().equals(unknown), "Missing addon data was changed");
         test.assertTrue(core.modules().find(builtIn.id()).known(), "Old built-in type failed to load");
         test.succeed();
+    }
+
+    @GameTest(template = "combat", batch = "addon_module_failure_isolation")
+    public static void linkageErrorsStayInsideTheAffectedAddon(GameTestHelper test) {
+        var core = core(test);
+        int[] calls = new int[5];
+        var factoryFailure = testAddon(core, "factory_failure", () -> {
+            calls[0]++;
+            throw new NoSuchMethodError("Test addon factory");
+        });
+        var startFailure = testAddon(core, "start_failure", () -> new ModuleBehavior() {
+            @Override public void onStart(ModuleContext context) {
+                calls[1]++;
+                throw new NoSuchMethodError("Test addon start");
+            }
+        });
+        var tickFailure = testAddon(core, "tick_failure", () -> new ModuleBehavior() {
+            @Override public void onTick(ModuleContext context) {
+                calls[2]++;
+                throw new NoClassDefFoundError("Test addon tick");
+            }
+        });
+        var stopFailure = testAddon(core, "stop_failure", () -> new ModuleBehavior() {
+            @Override public void onStop(ModuleContext context) {
+                calls[3]++;
+                throw new NoSuchMethodError("Test addon stop");
+            }
+        });
+        var healthy = testAddon(core, "healthy", () -> new ModuleBehavior() {
+            @Override public void onTick(ModuleContext context) { calls[4]++; }
+        });
+        List<VirtualModule> installed = List.of(factoryFailure, startFailure, tickFailure, stopFailure, healthy);
+        var saved = core.modules().save();
+        core.modules().tick(core);
+        core.modules().tick(core);
+        test.assertTrue(java.util.Arrays.equals(calls, new int[]{1, 1, 1, 0, 2}),
+                "Failed addon retried while still powered or another module stopped");
+        test.assertTrue(core.modules().save().equals(saved), "Addon failure changed saved module configuration");
+        core.modules().clearRuntime();
+        test.assertTrue(calls[3] == 1, "Stop callback was not exercised");
+        installed.forEach(module -> core.modules().remove(module.id()));
+        test.succeed();
+    }
+
+    private static VirtualModule testAddon(HeartBlockEntity core, String path, Supplier<ModuleBehavior> factory) {
+        var id = ResourceLocation.fromNamespaceAndPath("sablelife_tests", path);
+        ModuleRegistry.register(new ModuleDefinition(id, "Test addon", "Test addon", ModuleDefinition.Category.FUNCTION,
+                Set.of(Core.REDSTONE), ModuleDefinition.MarkMode.NONE, List.of(), factory));
+        return core.modules().add(id.toString());
     }
 
     private static HeartBlockEntity core(GameTestHelper test) {

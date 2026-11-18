@@ -76,6 +76,23 @@ public final class CoreRemoteNetworkReplay {
             survival = (HeartBlockEntity) level.getBlockEntity(SURVIVAL);
             prepare(creative, ORDINARY, GameType.CREATIVE);
             prepare(player, SURVIVAL, GameType.SURVIVAL);
+            if (Boolean.getBoolean("sablelife.remoteClaimsOptionReplay")) {
+                var option = (net.neoforged.neoforge.common.ModConfigSpec.BooleanValue)
+                        dev.sablelife.SableLifeServerConfig.SPEC.getValues().get("allowCoreRemoteWithUnsupportedClaims");
+                if (!option.get()) throw new IllegalStateException("World opt-in was not loaded from serverconfig");
+                option.set(false);
+                try {
+                    for (var actor : List.of(creative, player)) {
+                        var pos = actor == creative ? ORDINARY : SURVIVAL;
+                        actor.setShiftKeyDown(true);
+                        var hit = new net.minecraft.world.phys.BlockHitResult(pos.getCenter(), net.minecraft.core.Direction.UP, pos, false);
+                        var result = actor.gameMode.useItemOn(actor, level, actor.getMainHandItem(), InteractionHand.MAIN_HAND, hit);
+                        actor.setShiftKeyDown(false);
+                        if (result.consumesAction()) throw new IllegalStateException("Disabled opt-in allowed a network test binding");
+                    }
+                } finally { option.set(true); }
+                System.out.println("CORE_REMOTE_NETWORK_UNSUPPORTED_DENIAL PASS");
+            }
             phase = 1;
         } else if (phase == 1 && ordinary.remoteId() != null && survival.remoteId() != null) {
             if (STABILITY && !player.getRecipeBook().contains(ResourceLocation.fromNamespaceAndPath("sablelife", "core_remote"))) {

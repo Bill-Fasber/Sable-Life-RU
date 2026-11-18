@@ -25,7 +25,10 @@ public final class ModuleConnections {
    if(m.type().equals("navigation"))for(String d:TargetNavigation.DIRECTIONS)endpoint(result,m,(int)m.value("navigation"+d+"Channel"),false,true,"navigation"+d+"Channel");
    if(m.type().equals("sequence")){for(var step:m.sequence())if(!step.waiting())endpoint(result,m,step.channel(),false,true,"sequence");endpoint(result,m,(int)m.value("resetChannel"),m.value("resetSource")==0,false,"reset");}
    if(m.type().equals("signal_turn"))for(String d:ModuleSignalTurn.DIRECTIONS)endpoint(result,m,(int)m.value(d+"Channel"),m.value(d+"Source")==1,false,d+"Channel");
-   if(m.type().equals("signal_logic"))for(var r:m.signalRules().rows())endpoint(result,m,(int)r.value("signalInput"),false,false,"condition");
+   if(m.type().equals("signal_logic"))for(var r:m.signalRules().rows()){
+    endpoint(result,m,(int)r.value("signalInput"),false,false,"condition");
+    if(SignalRules.compares(r))endpoint(result,m,(int)r.value("signalCompare"),false,false,"condition");
+   }
    if(m.type().equals("combat_event"))for(var r:m.signalRules().rows())endpoint(result,m,(int)r.value("eventChannel"),false,true,"event");
    if(m.type().equals("armor"))for(var r:m.armorRules().rows())endpoint(result,m,r.channel(),r.source()==1,false,"armor");
   }return result.stream().distinct().toList();

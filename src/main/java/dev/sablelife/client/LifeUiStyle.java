@@ -27,6 +27,20 @@ public final class LifeUiStyle {
     public static void reverse(Button button, Runnable action) { if (button instanceof StyledButton styled) styled.reverse = action; }
     public static void bookmark(Button button, int color) { if (button instanceof StyledButton styled) styled.bookmark = color; }
     public static void fill(Button button,int color){if(button instanceof StyledButton styled)styled.fill=color;}
+    static void drawPageNumber(GuiGraphics graphics, net.minecraft.client.gui.Font font, Component label,
+                               Button previous, Button next, int left, int top) {
+        int gap = next.getX() - previous.getX() - previous.getWidth();
+        int width = Math.max(1,font.width(label));
+        float scale = Math.min(scale(),Math.max(1,gap-4)/(float)width);
+        float centerX = next.getX() - gap/2f - left;
+        float centerY = previous.getY() + previous.getHeight()/2f - top;
+        graphics.pose().pushPose();
+        graphics.pose().translate(centerX-width*scale/2f,centerY-font.lineHeight*scale/2f,0);
+        graphics.pose().scale(scale,scale,1);
+        graphics.drawString(font,label,0,0,0xD9C4ED,false);
+        graphics.pose().popPose();
+    }
+
     private static final class StyledButton extends Button {
         private Runnable reverse;
         private int bookmark;

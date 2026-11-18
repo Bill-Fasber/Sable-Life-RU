@@ -1,5 +1,6 @@
 package dev.sablelife.module;
 
+import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.ownership.LoadedCoreIndex;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.LivingEntity;
@@ -16,7 +17,7 @@ public final class SummonTargetCache {
     private final Map<UUID,Vec3> centers=new LinkedHashMap<>();
     private long nextSearch=Long.MIN_VALUE,queries,revision;
     private int category=-1;
-    private dev.sablelife.heart.HeartBlockEntity policyOwner;
+    private HeartBlockEntity policyOwner;
     public long queries(){return queries;}
     public long revision(){return revision;}
     public Vec3 point(UUID id){if(id==null)return null;var e=entities.get(id);return e!=null&&!e.isRemoved()&&e.isAlive()?centers.get(id):null;}
@@ -48,10 +49,49 @@ public final class SummonTargetCache {
         }
     }
     public UUID select(UUID current,Vec3 origin,double range,boolean reselect){
-        double best=range*range;var old=point(current);
-        if(!reselect&&old!=null&&old.distanceToSqr(origin)<=best)return current;
-        UUID chosen=null;int bestRank=Integer.MAX_VALUE;double rangeSquared=range*range;
-        for(var entry:centers.entrySet()){if(point(entry.getKey())==null)continue;double distance=entry.getValue().distanceToSqr(origin);int rank=ModuleTargets.rank(policyOwner,entities.get(entry.getKey()));if(distance<=rangeSquared&&(chosen==null||rank<bestRank||rank==bestRank&&distance<best)){best=distance;bestRank=rank;chosen=entry.getKey();}}
+        return select(current, origin, range, reselect, null);
+    }
+
+    UUID select(UUID current, Vec3 origin, double range, boolean reselect, HeartBlockEntity sightSource) {
+        double rangeSquared = range * range;
+        var old = point(current);
+        if (!reselect && old != null && old.distanceToSqr(origin) <= rangeSquared) {
+            return visible(sightSource, origin, entities.get(current)) ? current : null;
+        }
+        // A blocked or missing lock waits for the next shared search before testing alternatives.
+        if (!reselect && sightSource != null) return null;
+
+        UUID chosen = null;
+        int bestRank = Integer.MAX_VALUE;
+        double bestDistance = rangeSquared;
+        for (var entry : centers.entrySet()) {
+            UUID id = entry.getKey();
+            if (point(id) == null) continue;
+            double distance = entry.getValue().distanceToSqr(origin);
+            if (distance > rangeSquared) continue;
+            var candidate = entities.get(id);
+            int rank = ModuleTargets.rank(policyOwner, candidate);
+            if (chosen != null && (rank > bestRank || rank == bestRank && distance >= bestDistance)) continue;
+            if (!visible(sightSource, origin, candidate)) continue;
+            bestDistance = distance;
+            bestRank = rank;
+            chosen = id;
+        }
         return chosen;
+    }
+
+    private static boolean visible(HeartBlockEntity source, Vec3 origin, LivingEntity target) {
+        return source == null || ModuleTargets.visible((ServerLevel) source.getLevel(), source.creatureId(), origin, target);
+    }
+
+    static LivingEntity resolveInherited(ServerLevel level, HeartBlockEntity core, VirtualModule module, UUID id) {
+        var target = ModuleTargets.resolve(level, id, core.creatureId());
+        return target != null && !target.isRemoved() && ModuleTargets.matches(target, module) ? target : null;
+    }
+
+    static Vec3 inheritedPoint(LivingEntity target, Vec3 origin, double range, HeartBlockEntity sightSource) {
+        if (target == null) return null;
+        var point = target.getBoundingBox().getCenter();
+        return point.distanceToSqr(origin) <= range * range && visible(sightSource, origin, target) ? point : null;
     }
 }

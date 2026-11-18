@@ -30,10 +30,11 @@ public final class ModuleSummonedWeapon {
         }
     }
     private static final class Group {
-        final UUID source;final VirtualModule config;final long activation;final List<State> members;
+        final UUID source,moveTarget;final VirtualModule config;final long activation;final List<State> members;
         final SummonTargetCache targets=new SummonTargetCache();final List<State> ready=new ArrayList<>();final List<Vec3> points=new ArrayList<>();
         Group(HeartBlockEntity heart,VirtualModule source,VirtualModule summon,long now,long activation){
             this.source=source.id();this.config=VirtualModule.load(summon.save());this.activation=activation;
+            this.moveTarget = summon.value("summonAim") == 1 ? ModuleTargets.attackTarget(heart, summon) : null;
             var center=position(heart,summon);var forward=ModuleCombat.direction(heart,summon);var points=formation(heart,summon);
             var inverse=new Quaterniond(summon.anchors().getFirst().body(heart).logicalPose().orientation()).invert();var list=new ArrayList<State>();
             for(int i=0;i<points.size();i++)list.add(new State(source,summon,points.get(i),forward,dev.sablelife.attack.ContactBox.rotate(inverse,points.get(i).subtract(center)),now+i*(long)summon.value("summonDeployGap"),UUID.randomUUID()));
@@ -97,15 +98,33 @@ public final class ModuleSummonedWeapon {
                 if(!level.hasChunkAt(net.minecraft.core.BlockPos.containing(point)))continue;
                 group.ready.add(member);group.points.add(point);
             }
-            if(m.value("summonAim")==1)group.targets.prepare(level,heart.creatureId(),(int)m.value("target"),group.points,m.value("targetRange"),now);else group.targets.suspend();
+            boolean targeting = m.value("summonAim") == 1;
+            boolean inheriting = targeting && group.moveTarget != null;
+            double targetRange = m.value("targetRange");
+            HeartBlockEntity sightSource = m.value("lineOfSight") == 1 ? heart : null;
+            if(targeting && !inheriting)group.targets.prepare(level,heart.creatureId(),(int)m.value("target"),group.points,targetRange,now);else group.targets.suspend();
+            var moveTarget = inheriting && !group.ready.isEmpty()
+                    ? SummonTargetCache.resolveInherited(level, heart, m, group.moveTarget) : null;
             var forward=m.value("summonPosition")==0&&marked?ModuleCombat.direction(heart,m):null;
             for(int i=0;i<group.ready.size();i++){
                 var member=group.ready.get(i);var point=group.points.get(i);
-                if(m.value("summonAim")==1){member.target=group.targets.select(member.target,point,m.value("targetRange"),member.targetRevision!=group.targets.revision());member.targetRevision=group.targets.revision();var target=group.targets.point(member.target);if(target!=null)member.direction=turn(member.direction,target.subtract(point),m.value("summonTurnSpeed"));}
+                boolean canAttack = true;
+                if (inheriting) {
+                    var target = SummonTargetCache.inheritedPoint(moveTarget, point, targetRange, sightSource);
+                    canAttack = target != null;
+                    if (canAttack) member.direction = turn(member.direction, target.subtract(point), m.value("summonTurnSpeed"));
+                } else if (targeting) {
+                    long revision = group.targets.revision();
+                    member.target = group.targets.select(member.target, point, targetRange, member.targetRevision != revision, sightSource);
+                    member.targetRevision = revision;
+                    var target = group.targets.point(member.target);
+                    if (target != null) member.direction = turn(member.direction, target.subtract(point), m.value("summonTurnSpeed"));
+                }
                 else{member.target=null;member.direction=forward==null?member.fixedDirection:forward;}
                 member.frame=frame(m,point,member.direction);display(heart,m,member);if(!member.started){member.started=true;lifecycle(level,member.lifecycle,point,true);}
+                // A copied attack still uses its own impact and area rules once the formation can fire.
                 member.attack.emitter(new VirtualModule.Emitter(member.frame.muzzle,member.frame.direction,member.frame.aim,member.audioId));
-                if(now>=member.attackAt)switch(member.attack.type()){
+                if(canAttack && now>=member.attackAt)switch(member.attack.type()){
                     case "laser"->member.laser.tickEmitter(heart,member.attack);
                     case "slash"->member.slash.tickEmitter(heart,member.attack);
                     case "ground_strike"->member.strike.tickEmitter(heart,member.attack);
@@ -131,9 +150,13 @@ public final class ModuleSummonedWeapon {
     public Frame frame(UUID id){return frames(id).stream().findFirst().orElse(null);}
     public List<Frame> frames(UUID id){var groups=states.get(id);return groups==null?List.of():groups.stream().flatMap(g->g.members.stream()).filter(s->s.started&&!s.finished&&s.frame!=null).map(s->s.frame).toList();}
     public static void preview(net.minecraft.server.level.ServerPlayer player,HeartBlockEntity heart,VirtualModule m){
-        var points=formation(heart,m);var direction=ModuleCombat.direction(heart,m);var targets=new SummonTargetCache();if(m.value("summonAim")==1)targets.prepare((ServerLevel)heart.getLevel(),heart.creatureId(),(int)m.value("target"),points,m.value("targetRange"),heart.getLevel().getGameTime());
+        var points=formation(heart,m);var direction=ModuleCombat.direction(heart,m);var targets=new SummonTargetCache();
+        boolean targeting = m.value("summonAim") == 1;
+        double targetRange = m.value("targetRange");
+        HeartBlockEntity sightSource = m.value("lineOfSight") == 1 ? heart : null;
+        if(targeting)targets.prepare((ServerLevel)heart.getLevel(),heart.creatureId(),(int)m.value("target"),points,targetRange,heart.getLevel().getGameTime());
         var dust=new net.minecraft.core.particles.DustParticleOptions(new org.joml.Vector3f(.25F,1,.5F),1);var aimDust=new net.minecraft.core.particles.DustParticleOptions(new org.joml.Vector3f(.3F,.65F,1),1);var previews=new net.minecraft.nbt.ListTag();double half=m.value("displaySize")/2;int detail=points.size()>8?2:8,rays=points.size()>8?4:12;
-        for(var point:points){var aim=direction;var target=m.value("summonAim")==1?targets.point(targets.select(null,point,m.value("targetRange"),true)):null;if(target!=null&&target.distanceToSqr(point)>1e-9)aim=turn(direction,target.subtract(point),m.value("summonTurnSpeed"));var frame=frame(m,point,aim);
+        for(var point:points){var aim=direction;var target=targeting?targets.point(targets.select(null,point,targetRange,true,sightSource)):null;if(target!=null&&target.distanceToSqr(point)>1e-9)aim=turn(direction,target.subtract(point),m.value("summonTurnSpeed"));var frame=frame(m,point,aim);
             var row=new CompoundTag();row.put("Item",m.projectileItem(player.registryAccess()).save(player.registryAccess()));row.putDouble("X",point.x);row.putDouble("Y",point.y);row.putDouble("Z",point.z);row.putFloat("Size",(float)m.value("displaySize"));row.putDouble("QX",frame.visual.x);row.putDouble("QY",frame.visual.y);row.putDouble("QZ",frame.visual.z);row.putDouble("QW",frame.visual.w);previews.add(row);
             row.putDouble("MuzzleX",frame.muzzle.x);row.putDouble("MuzzleY",frame.muzzle.y);row.putDouble("MuzzleZ",frame.muzzle.z);
             for(int axis=0;axis<3;axis++)for(int i=0;i<=detail;i++){var v=new org.joml.Vector3d();v.setComponent(axis,-half+2*half*i/detail);frame.visual.transform(v);var p=point.add(v.x,v.y,v.z);((ServerLevel)player.level()).sendParticles(player,dust,true,p.x,p.y,p.z,1,0,0,0,0);}

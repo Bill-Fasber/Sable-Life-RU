@@ -22,6 +22,7 @@ import net.minecraft.world.level.block.state.BlockState;
 
 import java.util.UUID;
 import java.util.HashSet;
+import net.minecraft.world.phys.Vec3;
 
 public final class HeartBlockEntity extends com.simibubi.create.content.decoration.copycat.CopycatBlockEntity {
     public static final float DEFAULT_MAX_HEALTH = 100;
@@ -95,18 +96,116 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
     private final HeartWireless wireless = new HeartWireless(this);
     private final dev.sablelife.module.HeartModules modules = new dev.sablelife.module.HeartModules(this);
     public dev.sablelife.module.HeartModules modules() { return modules; }
+
+    private static final int BLUEPRINT_CONNECTION_SETTLE_TICKS = 5;
+    private static final int BLUEPRINT_ACTIVATION_TIMEOUT = 100;
+    private long blueprintConnectionsSettleUntil = Long.MIN_VALUE;
+    private long blueprintActivationDeadline = Long.MIN_VALUE;
+    private long blueprintActivationEarliest = Long.MIN_VALUE;
+    private final HashSet<UUID> blueprintConnections = new HashSet<>();
+    private final java.util.Map<UUID, Vec3> blueprintWaypoints = new java.util.HashMap<>();
+
+    public void blueprintPlaced() {
+        if (level instanceof ServerLevel server) {
+            blueprintConnectionsSettleUntil = server.getGameTime() + BLUEPRINT_CONNECTION_SETTLE_TICKS;
+        }
+    }
+
+    public boolean blueprintConnectionsSettling() {
+        return level instanceof ServerLevel server && server.getGameTime() < blueprintConnectionsSettleUntil;
+    }
+
+    public void expectBlueprintConnection(UUID body) {
+        blueprintConnections.add(body);
+    }
+
+    public void deferBlueprintWaypoint(UUID module, Vec3 local) {
+        blueprintWaypoints.put(module, local);
+    }
+
+    public boolean awaitingBlueprintActivation() { return blueprintActivationDeadline != Long.MIN_VALUE; }
+
+    /** Called after the native placer has committed every recorded part. */
+    public boolean activateAfterBlueprintPlacement(int placedParts) {
+        if (!canActivateForRespawn()) return false;
+        if (placedParts > 1 && blueprintConnections.isEmpty()) {
+            // Legacy templates lack the saved chain. Allow unmarked joints time to publish too.
+            blueprintActivationEarliest = blueprintConnectionsSettleUntil;
+            for (var module : modules.all()) {
+                for (var mark : module.storedAnchors()) blueprintConnections.add(mark.anchor().bodyId());
+            }
+        }
+        if (blueprintWaypoints.isEmpty() && blueprintConnectionsReady()) return activateForRespawn();
+        blueprintActivationDeadline = level.getGameTime() + BLUEPRINT_ACTIVATION_TIMEOUT;
+        dev.sablelife.ownership.LoadedCoreIndex.observe(this);
+        setChanged();
+        return true;
+    }
+
+    private boolean blueprintConnectionsReady() {
+        if (level.getGameTime() < blueprintActivationEarliest) return false;
+        var body = SableBodyProbe.inspect(level, worldPosition);
+        return body.assembled() && body.otherHearts() == 0 && body.connectedBodies().containsAll(blueprintConnections);
+    }
+
+    private void finishBlueprintPlacement(ServerLevel server) {
+        if (!blueprintWaypoints.isEmpty()) {
+            var body = dev.ryanhcode.sable.Sable.HELPER.getContaining(server, worldPosition);
+            if (body == null || body.isRemoved()) return;
+            blueprintWaypoints.forEach((id, local) -> {
+                var module = modules.find(id);
+                if (module != null && module.type().equals("linear_movement")) {
+                    module.arenaCenter(body.logicalPose().transformPosition(local), server.dimension().location().toString());
+                }
+            });
+            blueprintWaypoints.clear();
+            modules.changed();
+            setChanged();
+        }
+        if (blueprintActivationDeadline == Long.MIN_VALUE) return;
+        if (blueprintConnectionsReady() && activateForRespawn()) return;
+        if (server.getGameTime() >= blueprintActivationDeadline) {
+            blueprintActivationDeadline = Long.MIN_VALUE;
+            blueprintActivationEarliest = Long.MIN_VALUE;
+            blueprintConnections.clear();
+            setChanged();
+            com.mojang.logging.LogUtils.getLogger().warn("Blueprint core {} remained dormant because its structure was not ready", creatureId);
+        }
+    }
     private long combatMusicHits;
     public long combatMusicHits() { return combatMusicHits; }
     public boolean isControlCore(){return getBlockState().getBlock() instanceof RedstoneCoreBlock;}
     public boolean isSurvivalCore(){return getBlockState().getBlock() instanceof SurvivalLifeCoreBlock;}
     private long survivalTokenBalance;
+    private final SurvivalFuel survivalFuel;
+    private boolean pendingFuelClaim;
     public long survivalTokenBalance(){return survivalTokenBalance;}
 
-    long takeTransferredTokens(){
-        long balance=survivalTokenBalance;
-        survivalTokenBalance=0;
+    SurvivalFuel survivalFuel() { return survivalFuel; }
+
+    boolean canRefuel() {
+        return isSurvivalCore() && !pendingFuelClaim && !isRemoved()
+                && level instanceof ServerLevel server && server.getServer().isSameThread()
+                && (health.state() == HeartState.DORMANT || health.state() == HeartState.ALIVE);
+    }
+
+    SurvivalTokenTransfers.Claim takeFuelClaim(HolderLookup.Provider registries) {
+        var claim = new SurvivalTokenTransfers.Claim(survivalTokenBalance, survivalFuel.save(registries));
+        survivalTokenBalance = 0;
+        survivalFuel.clearContent();
+        survivalFuel.automatic(false);
         setChanged();
-        return balance;
+        return claim;
+    }
+
+    void beginFuelClaim() { pendingFuelClaim = true; }
+
+    void finishFuelClaim(SurvivalTokenTransfers.Claim claim, HolderLookup.Provider registries) {
+        pendingFuelClaim = false;
+        if (claim == null) return;
+        restoreTransferredTokens(claim.balance());
+        survivalFuel.load(claim.fuel(), registries);
+        setChanged();
     }
 
     void restoreTransferredTokens(long balance){
@@ -130,7 +229,7 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
     }
 
     public boolean depositSurvivalTokens(Player player,net.minecraft.world.item.ItemStack stack){
-        if(!isSurvivalCore()||!canToggleBreaking(player))return false;
+        if(!canRefuel()||!canToggleBreaking(player))return false;
         long value=SurvivalTokens.depositValue(stack);
         if(value<=0||value>Long.MAX_VALUE-survivalTokenBalance)return false;
         survivalTokenBalance+=value;
@@ -138,12 +237,12 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
         setChanged();
         return true;
     }
-    boolean depositSurvivalTokens(Player player,net.minecraft.world.Container inputs){
-        if(!isSurvivalCore()||!canToggleBreaking(player))return false;
-        long value=SurvivalTokens.inputValue(inputs);
+    boolean settleRefuel(){
+        if(!canRefuel())return false;
+        long value=SurvivalTokens.inputValue(survivalFuel);
         if(value<=0||value>Long.MAX_VALUE-survivalTokenBalance)return false;
         survivalTokenBalance+=value;
-        inputs.clearContent();
+        survivalFuel.clearContent();
         setChanged();
         return true;
     }
@@ -168,10 +267,11 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
     }
     public HeartWireless wireless() { return wireless; }
     public void openWireless(Player player) { openWireless(player,0); }
-    public void openWireless(Player player,int channel) {
+    public void openWireless(Player player,int channel) { openWireless(player,channel,-1); }
+    public void openWireless(Player player,int channel,int outputRow) {
         if (!(level instanceof ServerLevel) || !canAccessEditor(player)) return;
         dev.sablelife.module.CoreEditorPosition.remember(this,player.getUUID(),dev.sablelife.module.CoreEditorPosition.Section.WIRELESS,0);
-        player.openMenu(new net.minecraft.world.SimpleMenuProvider((id, inventory, ignored) -> new HeartWirelessMenu(id, inventory, this,channel),
+        player.openMenu(new net.minecraft.world.SimpleMenuProvider((id, inventory, ignored) -> new HeartWirelessMenu(id, inventory, this,channel,outputRow),
                 Component.translatable("menu.sablelife.wireless")));
     }
     private ResourceLocation deathLoot = ResourceLocation.withDefaultNamespace("empty");
@@ -285,15 +385,18 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
             var registry=FactionRegistry.get(sp.server);var id=copiedRelations.getUUID("Faction");
             if(registry.contains(id)&&!registry.canAssign(sp,id))return false;
         }
-        if (!dev.sablelife.module.AuthoringLimits.compound(data, 1024 * 1024)
-                || !player.canUseGameMasterBlocks() && dev.sablelife.module.AuthoringLimits.containsCommands(data)) return false;
+        boolean allowLocalMessages = isSurvivalCore() && dev.sablelife.SableLifeServerConfig.survivalModuleEnabled("message_display");
+        if (!dev.sablelife.module.AuthoringLimits.compound(data, dev.sablelife.module.AuthoringLimits.MAX_CONFIGURATION_BYTES)
+                || !player.canUseGameMasterBlocks() && dev.sablelife.module.AuthoringLimits.containsOperatorModules(data, allowLocalMessages)) return false;
         float maximum = data.getFloat("MaxHealth");
         if (!Float.isFinite(maximum) || maximum < 1 || maximum > HeartHealth.MAX_CONFIGURED_HEALTH) return false;
         // Decode first, then replace the target's authoring settings in one server operation.
         var copiedModules = new net.minecraft.nbt.ListTag(); var copiedIds = new java.util.HashMap<java.util.UUID, java.util.UUID>(); var incoming = data.getList("Modules", 10);
-        for (int i = 0; i < Math.min(dev.sablelife.module.HeartModules.LIMIT, incoming.size()); i++) {
+        if (incoming.size() > dev.sablelife.module.HeartModules.LIMIT) return false;
+        for (int i = 0; i < incoming.size(); i++) {
             var tag = incoming.getCompound(i).copy();
-            if (player.canUseGameMasterBlocks()) tag.remove("CommandApprovalRequired");
+            if (player.canUseGameMasterBlocks() || allowLocalMessages && tag.getString("Type").equals("message_display"))
+                tag.remove("CommandApprovalRequired");
             for (String key : java.util.List.of("GyroDown", "Anchors", "ParticleAreaAnchors", "ParticlePointAnchors", "ArenaCenter", "ImportSource", "RewardOwner", "Invalidated", "Detached")) tag.remove(key);
             var newId = java.util.UUID.randomUUID();
             if (tag.hasUUID("CopySourceId")) copiedIds.put(tag.getUUID("CopySourceId"), newId);
@@ -306,6 +409,7 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
             if(copied.impactFieldId()!=null)copied.impactField(copiedIds.getOrDefault(copied.impactFieldId(),copied.impactFieldId()));
             if(copied.summonAttackId()!=null)copied.summonAttack(copiedIds.getOrDefault(copied.summonAttackId(),copied.summonAttackId()));
             if(copied.hitSourceId()!=null)copied.hitSource(copiedIds.getOrDefault(copied.hitSourceId(),copied.hitSourceId()),0);
+            if (copied.facingSensorId() != null) copied.facingSensor(copiedIds.getOrDefault(copied.facingSensorId(), copied.facingSensorId()));
             if(dev.sablelife.module.SignalRules.supported(copied.type()))for(var row:copied.signalRules().rows())if(row.source()!=null)row.source(copiedIds.getOrDefault(row.source(),row.source()));
             copiedModules.set(i,copied.save());
         }
@@ -333,6 +437,9 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
             deathTemplates.set(i, stack);
         }
         var wirelessData = data.getCompound("Wireless").copy(); wirelessData.putLong("Elapsed", 0);
+        // The configuration copier has no mapping between the source and destination structures.
+        for (var channel : wirelessData.getList("Channels",10))
+            ((CompoundTag)channel).remove(WirelessChannel.OUTPUT_FACES_TAG);
         wireless.load(wirelessData, level.registryAccess()); modules.load(moduleData); if(isSurvivalCore())SurvivalLifeCorePolicy.sanitize(this); if(isControlCore()){RedstoneCorePolicy.sanitize(this);health=new HeartHealth(DEFAULT_MAX_HEALTH,DEFAULT_DEATH_DELAY);boundBody=null;ownershipCaptured=false;}wireless.finishMigration(); changed(); return true;
     }
     public boolean canToggleBreaking(Player player) {
@@ -518,6 +625,7 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
 
     public HeartBlockEntity(BlockPos position, BlockState state) {
         super(SableLife.HEART_ENTITY.get(), position, state);
+        survivalFuel = isSurvivalCore() ? new SurvivalFuel(this) : null;
         limbCleanup = new dev.sablelife.ownership.DetachedLimbCleanup(!isSurvivalCore() && !isControlCore());
         if(state.getBlock() instanceof SurvivalLifeCoreBlock)
             health=HeartHealth.restore(DEFAULT_MAX_HEALTH,0,0,HeartState.DORMANT,0);
@@ -568,6 +676,7 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
         if(isControlCore())return;
         if (level == null || level.isClientSide) return;
         if(isSurvivalCore()&&!canAccessEditor(player))return;
+        if (blueprintActivationDeadline != Long.MIN_VALUE || !blueprintWaypoints.isEmpty()) return;
         if (health.state() == HeartState.DYING || health.state() == HeartState.DEAD) {
             player.displayClientMessage(Component.translatable("message.sablelife.dead"), false);
             return;
@@ -595,11 +704,18 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
             player.displayClientMessage(Component.translatable("survival_tokens.sablelife.activation_partial"),true);
     }
     public boolean activateForRespawn() {
-        if(isControlCore()||isSurvivalCore()||!(level instanceof ServerLevel)||isRemoved()||health.state()!=HeartState.DORMANT)return false;
+        if (!canActivateForRespawn()) return false;
         var body=SableBodyProbe.inspect(level,worldPosition);if(!body.assembled()||body.otherHearts()>0)return false;
         activateAssembled(body.rootId());return true;
     }
+    private boolean canActivateForRespawn() {
+        return !isControlCore() && !isSurvivalCore() && level instanceof ServerLevel
+                && !isRemoved() && health.state() == HeartState.DORMANT;
+    }
     private void activateAssembled(UUID root) {
+        blueprintActivationDeadline = Long.MIN_VALUE;
+        blueprintActivationEarliest = Long.MIN_VALUE;
+        blueprintConnections.clear();
         boundBody = root;
         health.activate();adaptiveDefense.reset();
         dev.sablelife.ownership.LoadedCoreIndex.geometryChanged((ServerLevel)level);
@@ -616,17 +732,29 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
 
     /** Hit-aware entry point for combat; administrative damage(float) intentionally has no body location. */
     public boolean damageAt(BlockPos hit, float amount) {
+        return damageAt(hit, amount, null);
+    }
+    public boolean damageAt(BlockPos hit, float amount, net.minecraft.world.entity.Entity attacker) {
+        return damageAt(hit, amount, attacker, false);
+    }
+    public boolean damageAt(BlockPos hit, float amount, net.minecraft.world.entity.Entity attacker, boolean projectileHit) {
+        return damageAt(hit, amount, attacker, projectileHit ? dev.sablelife.module.ArmorRules.HitType.PROJECTILE : dev.sablelife.module.ArmorRules.HitType.OTHER);
+    }
+    public boolean damageAt(BlockPos hit, float amount, net.minecraft.world.entity.Entity attacker, dev.sablelife.module.ArmorRules.HitType hitType) {
         if (!(level instanceof ServerLevel) || health.state() != HeartState.ALIVE || dev.sablelife.combat.EntityHitboxes.blocksStructure(this)) return false;
-        return damageFromHit(hit, dev.sablelife.module.ModuleArmor.damage(this, hit, amount));
+        return damageFromHit(hit, dev.sablelife.module.ModuleArmor.damage(this, hit, amount, hitType), attacker);
     }
     public boolean damage(float amount) { return damageFromHit(null, amount); }
     /** Applies a settled hit whose part armor, if any, has already been evaluated. */
     public boolean damageFromHit(BlockPos hit, float amount) {
+        return damageFromHit(hit, amount, null);
+    }
+    public boolean damageFromHit(BlockPos hit, float amount, net.minecraft.world.entity.Entity attacker) {
         if(level==null||level.isClientSide||health.state()!=HeartState.ALIVE||!Float.isFinite(amount)||amount<=0)return false;
         float reduced=isSurvivalCore()?amount:adaptiveDefense.apply(amount,level.getGameTime());
         // Preserve positive health loss when adaptive mitigation would round a valid hit to zero at high HP.
         if(adaptiveDefense.enabled())reduced=Math.min(amount,Math.max(reduced,Math.ulp(health.current())));
-        float before=health.current();boolean applied=applyDamage(reduced);
+        float before=health.current();boolean applied=applyDamage(reduced,attacker);
         if(applied&&(!isSurvivalCore()||health.state()==HeartState.ALIVE)){
             double loss = Math.max(0, (double) before - health.current());
             modules.damageAccumulation.record(this, hit, loss);
@@ -635,13 +763,17 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
         return applied;
     }
     /** Physical destruction of the core must end life regardless of combat defenses. */
-    public boolean forceDeath(){return applyDamage(health.maximum());}
-    private boolean applyDamage(float amount) {
-        if (level == null || level.isClientSide) return false;
+    public boolean forceDeath(){return applyDamage(health.maximum(),null);}
+    private boolean applyDamage(float amount, net.minecraft.world.entity.Entity attacker) {
+        if (!(level instanceof ServerLevel server)) return false;
         var deathPulses=!isSurvivalCore()&&health.state()==HeartState.ALIVE&&Float.isFinite(amount)&&amount>=health.current()?DeathSignals.prepare(this):java.util.List.<DeathSignals.Pulse>of();
         float previousHealth=health.current();
         if(!health.hurt(amount))return false;
-        if(health.current()<previousHealth)modules.healthBars.damaged(this);
+        if(health.current()<previousHealth){
+            modules.healthBars.damaged(this);
+            if(attacker instanceof net.minecraft.world.entity.projectile.Projectile projectile)attacker=projectile.getOwner();
+            if(attacker instanceof ServerPlayer player)dev.sablelife.ownership.ArenaRespawns.playerHit(server,this,player);
+        }
         DeathSignals.enqueue(this,deathPulses);
         dev.sablelife.ownership.BlueprintSpawns.deathTrigger(this,deathPulses);
         regenWait=regenDelay; regenProgress=0;
@@ -664,11 +796,17 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
         if(applied){DeathSignals.enqueue(this,deathPulses);dev.sablelife.ownership.BlueprintSpawns.deathTrigger(this,deathPulses);finishOwnDeath();changed();}return applied;
     }
     public boolean expireWildEncounter() {
-        if (!(level instanceof ServerLevel server) || isRemoved() || health.state() != HeartState.ALIVE) return false;
+        if (!(level instanceof ServerLevel server) || isRemoved()) return false;
+        if (health.state() != HeartState.ALIVE && (health.state() != HeartState.DORMANT
+                || !creatureId.equals(BodyOwnership.get(server).owner(worldPosition)))) return false;
         if (!LifeLifecycle.get(server.getServer()).scheduleNaturalRemoval(this)) return false;
+        blueprintActivationDeadline = Long.MIN_VALUE;
+        blueprintActivationEarliest = Long.MIN_VALUE;
+        blueprintConnections.clear();
+        blueprintWaypoints.clear();
         health = HeartHealth.restore(health.maximum(), 0, health.deathDelay(), HeartState.DEAD, 0);
         dev.sablelife.ownership.BlueprintSpawns.release(this);
-        dev.sablelife.ownership.ArenaRespawns.release(this);
+        dev.sablelife.ownership.ArenaRespawns.releaseAfterNaturalRemoval(this);
         modules.clearRuntime();
         terrainBreaker.clear();
         adaptiveDefense.reset();
@@ -733,6 +871,9 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
         limbCleanup.clear();
         clearBossBar();
         ownershipCaptured = false;
+        blueprintActivationDeadline = Long.MIN_VALUE;
+        blueprintActivationEarliest = Long.MIN_VALUE;
+        blueprintConnections.clear();
         health = HeartHealth.restore(health.maximum(),remainingHealth,isSurvivalCore()?0:health.deathDelay(),HeartState.DORMANT,0);
         combatMusicHits = 0; regenWait=regenDelay; regenProgress=0;
         creatureId = nextCreature;adaptiveDefense.reset();
@@ -762,11 +903,18 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
 
     public static void serverTick(Level level, BlockPos position, BlockState state, HeartBlockEntity heart) {
         dev.sablelife.ownership.LoadedCoreIndex.observe(heart);
+        if (!heart.isControlCore() && LifeLifecycle.get(level.getServer()).naturalRemovalPending(heart.creatureId)) return;
+        if (!heart.blueprintWaypoints.isEmpty() || heart.blueprintActivationDeadline != Long.MIN_VALUE) {
+            heart.finishBlueprintPlacement((ServerLevel)level);
+            if (heart.blueprintActivationDeadline != Long.MIN_VALUE) return;
+        }
         if(heart.isControlCore()){RedstoneCorePolicy.sanitize(heart);heart.wireless.tick((ServerLevel)level);heart.modules.tick(heart);return;}
         if(heart.isSurvivalCore()&&(heart.health.state()==HeartState.DYING||heart.health.state()==HeartState.DEAD)){
             heart.finishOwnDeath();
             return;
         }
+        if (heart.survivalFuel != null && heart.survivalFuel.automatic()
+                && (level.getGameTime() & 7) == 0 && !heart.survivalFuel.isEmpty()) heart.settleRefuel();
         heart.checkVoidDeath();
         heart.tickRegeneration();
         heart.updateBossBar((ServerLevel) level);
@@ -867,7 +1015,28 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
             return;
         }
         tag.put("Relations",relations.save());
-        if(isSurvivalCore())tag.putLong("SurvivalTokens",survivalTokenBalance);
+        if (blueprintActivationDeadline != Long.MIN_VALUE || !blueprintWaypoints.isEmpty()) {
+            var pending = new CompoundTag();
+            pending.putLong("Deadline", blueprintActivationDeadline);
+            pending.putLong("Earliest", blueprintActivationEarliest);
+            var parts = new net.minecraft.nbt.ListTag();
+            blueprintConnections.forEach(part -> parts.add(net.minecraft.nbt.NbtUtils.createUUID(part)));
+            pending.put("Parts", parts);
+            var waypoints = new net.minecraft.nbt.ListTag();
+            blueprintWaypoints.forEach((id, local) -> {
+                var point = new CompoundTag();
+                point.putUUID("Module", id);
+                point.putDouble("X", local.x); point.putDouble("Y", local.y); point.putDouble("Z", local.z);
+                waypoints.add(point);
+            });
+            pending.put("Waypoints", waypoints);
+            tag.put("PendingBlueprintActivation", pending);
+        }
+        if(isSurvivalCore()){
+            tag.putLong("SurvivalTokens",survivalTokenBalance);
+            var fuel = survivalFuel.save(registries);
+            if (!fuel.isEmpty()) tag.put(SurvivalFuel.TAG, fuel);
+        }
         tag.putInt("DataVersion", 1);
         tag.putLong("CombatMusicHits", combatMusicHits);
         tag.putUUID("CreatureId", creatureId);
@@ -915,7 +1084,22 @@ public final class HeartBlockEntity extends com.simibubi.create.content.decorati
             return;
         }
         relations.load(tag.getCompound("Relations"));
+        var pending = tag.getCompound("PendingBlueprintActivation");
+        blueprintActivationDeadline = pending.contains("Deadline", 4) ? pending.getLong("Deadline") : Long.MIN_VALUE;
+        blueprintActivationEarliest = pending.contains("Earliest", 4) ? pending.getLong("Earliest") : Long.MIN_VALUE;
+        blueprintConnections.clear();
+        for (var part : pending.getList("Parts", 11)) {
+            if (part instanceof net.minecraft.nbt.IntArrayTag uuid && uuid.size() == 4)
+                blueprintConnections.add(net.minecraft.nbt.NbtUtils.loadUUID(part));
+        }
+        blueprintWaypoints.clear();
+        for (var node : pending.getList("Waypoints", 10)) {
+            var point = (CompoundTag)node;
+            var local = new Vec3(point.getDouble("X"), point.getDouble("Y"), point.getDouble("Z"));
+            if (point.hasUUID("Module") && Double.isFinite(local.lengthSqr())) blueprintWaypoints.put(point.getUUID("Module"), local);
+        }
         survivalTokenBalance=isSurvivalCore()?Math.max(0,tag.getLong("SurvivalTokens")):0;
+        if (survivalFuel != null) survivalFuel.load(tag.getCompound(SurvivalFuel.TAG), registries);
         combatMusicHits = Math.max(0, tag.getLong("CombatMusicHits"));
         loadRegen(tag); loadDefense(tag);
         wireless.load(tag.getCompound("Wireless"), registries);

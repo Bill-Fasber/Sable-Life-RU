@@ -5,6 +5,7 @@ import dev.sablelife.compat.photomancy.PhotomancyRespawnBridge;
 import dev.sablelife.ownership.*;
 import net.minecraft.gametest.framework.*;
 import net.minecraft.nbt.*;
+import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.*;
 import com.simibubi.create.content.contraptions.AbstractContraptionEntity;
@@ -21,7 +22,15 @@ public final class DragonBlueprintReplayGameTests {
   var block=blocks.stream().map(t->(CompoundTag)t).filter(b->palette.getCompound(b.getInt("palette_id")).getString("Name").startsWith("copycats:")).findFirst().orElseThrow();
   var heartState=new CompoundTag();heartState.putString("Name",net.minecraft.core.registries.BuiltInRegistries.BLOCK.getKey(SableLife.HEART.get()).toString());var paletteId=palette.size();palette.add(heartState);block.putInt("palette_id",paletteId);block.remove("block_entity_data_id");
   // The complete user vehicle extends beyond the tiny GameTest's usual loaded columns.
-  var loaded=new HashSet<net.minecraft.world.level.ChunkPos>();for(int x=-8;x<=8;x++)for(int z=-8;z<=8;z++){var chunk=new net.minecraft.world.level.ChunkPos(x,z);h.getLevel().setChunkForced(x,z,true);loaded.add(chunk);}
+  var forcedByTest = new HashSet<ChunkPos>();
+  for (int x = -8; x <= 8; x++) {
+   for (int z = -8; z <= 8; z++) {
+    // Other tests in this level may already have forced some of these chunks.
+    if (h.getLevel().setChunkForced(x, z, true)) {
+     forcedByTest.add(new ChunkPos(x, z));
+    }
+   }
+  }
   var before=new HashSet<UUID>();for(var entity:h.getLevel().getAllEntities())before.add(entity.getUUID());
   var decoded=dev.rew1nd.sableschematicapi.blueprint.SableBlueprint.loadWithDiagnostics(template);
   decoded.diagnostics().logSummary(com.mojang.logging.LogUtils.getLogger(),"Dragon original blueprint decode");
@@ -48,7 +57,9 @@ public final class DragonBlueprintReplayGameTests {
    h.succeedWhen(()->{
     h.assertTrue(LifeLifecycle.get(h.getLevel().getServer()).finished(core.creatureId()),"Waiting for user blueprint body cleanup");
     for(var entity:mounted)h.assertTrue(entity.isRemoved(),"Mounted entity survived body death: "+entity.getType().builtInRegistryHolder().key().location()+" "+entity.getContraption().getClass().getName());
-    for(var chunk:loaded)h.getLevel().setChunkForced(chunk.x,chunk.z,false);
+    for (var chunk : forcedByTest) {
+     h.getLevel().setChunkForced(chunk.x, chunk.z, false);
+    }
    });
   });
  }

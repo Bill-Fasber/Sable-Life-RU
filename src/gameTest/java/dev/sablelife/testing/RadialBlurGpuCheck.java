@@ -16,8 +16,10 @@ import org.lwjgl.opengl.GL30;
 
 import java.util.List;
 
-/** Real framebuffer checks: world-point centre, protected core and transient cleanup. */
+/** Checks the projected emitter, rear-facing fallback and transient cleanup in a real framebuffer. */
 final class RadialBlurGpuCheck {
+    private static final Vec3 REAR_VIEW_CAMERA = new Vec3(0, 0, -20);
+
     private static ShockwavePacket packet(Vec3 point,float strength){
         return new ShockwavePacket(ResourceLocation.withDefaultNamespace("overworld"),point,18,40,1.5F,0,strength,0,1,0,1,256,false,1,1,.08F);
     }
@@ -46,13 +48,18 @@ final class RadialBlurGpuCheck {
             pattern(target);
             try(var clean=Screenshot.takeScreenshot(target)){
                 clean.writeToFile(folder.resolve("radial-baseline.png"));
-                for(var camera:List.of(Vec3.ZERO,new Vec3(5,0,0))){
+                for(var camera:List.of(Vec3.ZERO,new Vec3(5,0,0),REAR_VIEW_CAMERA)){
                     pattern(target);RenderSystem.enableDepthTest();RenderSystem.depthMask(true);
                     ShockwaveRenderer.render(target,List.of(new ShockwaveClient.Wave(p,0)),camera,new Matrix4f(),projection,8,1);
                     if(!ShockwaveRenderer.ready()||!GL11.glIsEnabled(GL11.GL_DEPTH_TEST)||!GL11.glGetBoolean(GL11.GL_DEPTH_WRITEMASK)
                             ||GL11.glGetInteger(GL30.GL_DRAW_FRAMEBUFFER_BINDING)!=target.frameBufferId)throw new AssertionError("Radial pass leaked render state");
-                    var center=ShockwaveMath.project(p.point(),camera,new Matrix4f(),projection);
-                    if(Math.abs(center.x()-.5)<.05)throw new AssertionError("Fixture did not use off-centre emitter");
+                    var screen=ShockwaveMath.project(p.point(),camera,new Matrix4f(),projection);
+                    var center=ShockwaveMath.radialCenter(screen);
+                    if(camera==REAR_VIEW_CAMERA){
+                        if(screen!=null||center.x()!=.5F||center.y()!=.5F)throw new AssertionError("Rear view did not use screen center");
+                    }else if(!center.equals(screen)||Math.abs(center.x()-.5)<.05){
+                        throw new AssertionError("Front view did not use off-center emitter");
+                    }
                     int clearChanged=0,outerChanged=0;
                     try(var actual=Screenshot.takeScreenshot(target)){
                         for(int y=0;y<target.height;y++)for(int x=0;x<target.width;x++){
@@ -64,14 +71,19 @@ final class RadialBlurGpuCheck {
                             }
                         }
                         if(clearChanged!=0||outerChanged<1000)throw new AssertionError("Radial clear centre/streaks failed: "+clearChanged+"/"+outerChanged);
-                        actual.writeToFile(folder.resolve(camera==Vec3.ZERO?"radial-emitter.png":"radial-camera-shift.png"));
+                        String screenshot = camera==REAR_VIEW_CAMERA ? "radial-behind.png"
+                                : camera==Vec3.ZERO ? "radial-emitter.png" : "radial-camera-shift.png";
+                        actual.writeToFile(folder.resolve(screenshot));
                         System.out.println("Radial GPU centre="+center.x()+","+center.y()+", protected changes="+clearChanged+", outer changes="+outerChanged);
                     }
                 }
-                for(int test=0;test<4;test++){
+                var offRange=packet(new Vec3(0,0,-300),.9F);
+                var rearRing=new ShockwavePacket(p.dimension(),new Vec3(-3,2,10),
+                        18,40,1.5F,.7F,.9F,0,1,0,1,256,false,1,0,0);
+                var inactive=List.of(rearRing,packet(p.point(),0),p,p,offRange);
+                for(int test=0;test<inactive.size();test++){
                     pattern(target);
-                    var sample=test==0?packet(new Vec3(-3,2,10),.9F):test==1?packet(p.point(),0):p;
-                    ShockwaveRenderer.render(target,List.of(new ShockwaveClient.Wave(sample,0)),Vec3.ZERO,new Matrix4f(),projection,test==2?41:8,test==3?0:1);
+                    ShockwaveRenderer.render(target,List.of(new ShockwaveClient.Wave(inactive.get(test),0)),Vec3.ZERO,new Matrix4f(),projection,test==2?41:8,test==3?0:1);
                     try(var actual=Screenshot.takeScreenshot(target)){
                         for(int y=0;y<target.height;y++)for(int x=0;x<target.width;x++)
                             if(difference(clean.getPixelRGBA(x,y),actual.getPixelRGBA(x,y))>2)throw new AssertionError("Inactive radial changed image, case="+test);
@@ -79,7 +91,16 @@ final class RadialBlurGpuCheck {
                 }
             }
             if(GL11.glGetError()!=GL11.GL_NO_ERROR)throw new AssertionError("Radial GPU error");
-            System.out.println("Radial blur GPU passed: projected emitter, camera shift, clear centre, outer streaks, behind/zero/expired/client-disabled and render state");
+            var previous=ShockwaveMath.radialCenter(ShockwaveMath.project(p.point(),Vec3.ZERO,new Matrix4f(),projection));
+            for(int step=1;step<=720;step++){
+                var view=new Matrix4f().rotationY((float)Math.toRadians(step*.25));
+                var center=ShockwaveMath.radialCenter(ShockwaveMath.project(p.point(),Vec3.ZERO,view,projection));
+                if(Math.hypot(center.x()-previous.x(),center.y()-previous.y())>.04)
+                    throw new AssertionError("Radial center jumped during camera rotation at step "+step);
+                previous=center;
+            }
+            if(previous.x()!=.5F||previous.y()!=.5F)throw new AssertionError("Rotated rear view is not centered");
+            System.out.println("Radial blur GPU passed: front/rear, smooth turn, clear center, outer streaks, rear ring/zero/expired/client-disabled/out of range and render state");
         }finally{target.destroyBuffers();ShockwaveRenderer.release();mc.getMainRenderTarget().bindWrite(true);RenderSystem.clearColor(0,0,0,1);}
     }
 }

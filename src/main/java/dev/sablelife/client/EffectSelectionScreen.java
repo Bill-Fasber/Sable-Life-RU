@@ -92,8 +92,9 @@ public final class EffectSelectionScreen extends AbstractContainerScreen<EffectS
     }
     private void pickColor(){
         if(current()==null||particleModule==null||!color.active)return;
-        String id=rightSelection;var entry=particleModule.particleEntry(id);int initial=entry.color()<0?0xFFFFFF:entry.color();
-        minecraft.setScreen(new ColorPickerScreen(this,Component.translatable("particles.sablelife.color"),initial,0xFFFFFF,(custom,rgb)->send("color",custom?rgb:-1,id)));
+        String id=rightSelection;var entry=particleModule.particleEntry(id);int preset=ModuleParticles.defaultColor(id);
+        int initial=entry.color()<0?preset:entry.color();
+        minecraft.setScreen(new ColorPickerScreen(this,Component.translatable("particles.sablelife.color"),initial,preset,(custom,rgb)->send("color",custom?rgb:-1,id)));
     }
     private void layoutProperties(){
         int y=topPos+imageHeight-26;

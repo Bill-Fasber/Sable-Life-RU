@@ -34,6 +34,26 @@ public final class WholeArmorGameTests {
   var part=c.modules().add("armor");part.anchors(List.of(ModuleAnchor.create(c,hit,Direction.UP)));var row=part.armorRules().add();row.edit("when",1);row.edit("modifier",-75);h.assertTrue(ModuleArmor.damage(c,hit,20)==5,"Part and whole stacked or lost strongest protection");
   part.edit("enabled",0,"");r.edit("enabled",0);h.assertTrue(ModuleArmor.damage(c,hit,20)==20,"Disabled row remained active");second.edit("when",1);h.assertTrue(ModuleArmor.damage(c,hit,20)==40,"Amplification phase failed");m.edit("enabled",0,"");h.assertTrue(ModuleArmor.damage(c,hit,20)==20,"Disabled module remained active");h.succeed();
  }
+ @GameTest(template="combat",batch="projectile_armor_data")
+ public static void ProjectileFilterUsesNormalDashboardEditAndLoadsOldSettings(GameTestHelper h){
+  var c=core(h,4);var m=whole(c);var old=m.save();
+  old.getCompound("Settings").remove("armorProjectileOnly");
+  var loaded=VirtualModule.load(old);
+  h.assertTrue(loaded.value("armorProjectileOnly")==0&&loaded.armorRules().rows().getFirst().modifier()==-50,"Legacy armor settings changed");
+  var player=TestActors.creative(h.getLevel());player.setPos(ModuleArena.corePosition(c));
+  var menu=new HeartDashboardMenu(3,player.getInventory(),c);
+  var action=new ModuleNetworking.Action(3,c.modules().revision(),m.id(),"edit","armorProjectileOnly",1,"");
+  var buffer=new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(),h.getLevel().registryAccess());
+  try{
+   ModuleNetworking.Action.CODEC.encode(buffer,action);
+   var decoded=ModuleNetworking.Action.CODEC.decode(buffer);
+   h.assertTrue(decoded.equals(action)&&menu.action(player,decoded.revision(),decoded.module(),decoded.operation(),decoded.key(),decoded.value(),decoded.text()),"Dashboard rejected projectile filter edit");
+  }finally{buffer.release();}
+  h.assertTrue(VirtualModule.load(m.save()).value("armorProjectileOnly")==1,"Filter was lost on save/load");
+  h.assertTrue(ModulePreset.create(m.save()).value("armorProjectileOnly")==1,"Filter was lost in preset");
+  h.assertTrue(!menu.action(player,c.modules().revision(),m.id(),"edit","armorProjectileOnly",.5,""),"Invalid toggle value accepted");
+  h.succeed();
+ }
  @GameTest(template="combat",batch="whole_armor_data")
  public static void SharedRulesSaveUnbindAndRemainEditableInWholeMode(GameTestHelper h){
   var c=core(h,4);var m=whole(c);var row=m.armorRules().rows().getFirst();row.edit("modifier",-75);row.edit("channel",4);row.edit("source",1);row.edit("when",1);

@@ -32,6 +32,7 @@ public final class SurvivalLifeCoreBlock extends HeartBlock {
 
     private static final String CLAIM = "SableLifeTokenClaim";
     private static final String BALANCE = "SableLifeTokenDisplay";
+    private static final String FUEL_COUNT = "SableLifeFuelDisplay";
 
     /** Only call after a terminal item-destruction path, never general discard/pickup. */
     public static void retireDestroyedClaim(net.minecraft.world.entity.Entity entity) {
@@ -52,12 +53,14 @@ public final class SurvivalLifeCoreBlock extends HeartBlock {
         for (var entity : event.getDrops()) {
             var stack = entity.getItem();
             if (!stack.is(SableLife.SURVIVAL_LIFE_CORE_ITEM.get())) continue;
-            long balance = core.takeTransferredTokens();
-            if (balance <= 0) return;
-            var id = SurvivalTokenTransfers.get(event.getLevel().getServer()).issue(balance);
+            int items = core.survivalFuel().itemCount();
+            var claim = core.takeFuelClaim(event.getLevel().registryAccess());
+            if (claim.isEmpty()) return;
+            var id = SurvivalTokenTransfers.get(event.getLevel().getServer()).issue(claim);
             CustomData.update(DataComponents.CUSTOM_DATA, stack, tag -> {
                 tag.putUUID(CLAIM, id);
-                tag.putLong(BALANCE, balance);
+                tag.putLong(BALANCE, claim.balance());
+                if (items > 0) tag.putInt(FUEL_COUNT, items);
             });
             return;
         }
@@ -70,17 +73,20 @@ public final class SurvivalLifeCoreBlock extends HeartBlock {
         if (!tag.hasUUID(CLAIM)) return;
         var id = tag.getUUID(CLAIM);
         var minecraft = server.getServer();
+        core.beginFuelClaim();
         // A protection mod can roll placement back after setPlacedBy returns.
         minecraft.tell(new TickTask(minecraft.getTickCount(), () -> {
             if (server.getBlockEntity(pos) == core && !core.isRemoved())
-                core.restoreTransferredTokens(SurvivalTokenTransfers.get(minecraft).redeem(id));
+                core.finishFuelClaim(SurvivalTokenTransfers.get(minecraft).redeem(id), server.registryAccess());
         }));
     }
 
     @Override public void appendHoverText(ItemStack stack, Item.TooltipContext context, List<Component> tooltip, TooltipFlag flag) {
         super.appendHoverText(stack, context, tooltip, flag);
-        long balance = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag().getLong(BALANCE);
-        tooltip.add(Component.translatable("survival_tokens.sablelife.remaining", balance).withStyle(ChatFormatting.GOLD));
+        var data = stack.getOrDefault(DataComponents.CUSTOM_DATA, CustomData.EMPTY).copyTag();
+        tooltip.add(Component.translatable("survival_tokens.sablelife.remaining", data.getLong(BALANCE)).withStyle(ChatFormatting.GOLD));
+        int items = data.getInt(FUEL_COUNT);
+        if (items > 0) tooltip.add(Component.translatable("survival_tokens.sablelife.stored_fuel", items).withStyle(ChatFormatting.GOLD));
     }
 
     @Override protected MapCodec<SurvivalLifeCoreBlock> codec(){return CODEC;}

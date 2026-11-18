@@ -1,6 +1,6 @@
 package dev.sablelife.compat.ironspells;
 import dev.sablelife.api.BodyCombatApi;
-import dev.sablelife.combat.BodyExplosionDamage;
+import dev.sablelife.combat.BodyCombat;
 import dev.sablelife.compat.sable.SableBodyProbe;
 import io.redspace.ironsspellbooks.entity.spells.AbstractMagicProjectile;
 import io.redspace.ironsspellbooks.entity.spells.magic_missile.MagicMissileProjectile;
@@ -50,7 +50,7 @@ public final class IronSpellsBodyBridge {
    shot.getPersistentData().putBoolean("SableLifeIronBlastHandled",true);
    java.util.UUID direct=null;
    if(shot instanceof FireArrowProjectile&&hit instanceof BlockHitResult block){
-    var core=SableBodyProbe.findActivatedHeart(level,block.getBlockPos());if(core!=null){direct=core.creatureId();BodyCombatApi.projectile(shot,block,shot.getDamage());}
+    var core=BodyCombat.findDamageHeart(level,block.getBlockPos());if(core!=null){direct=core.creatureId();BodyCombatApi.projectile(shot,block,shot.getDamage());}
    }
    if(shot instanceof FireArrowProjectile&&hit instanceof EntityHitResult entity&&entity.getEntity() instanceof dev.sablelife.combat.EntityHitbox box){
     // Native direct damage owns the receiver hit, including its cancellation/resistance hooks.

@@ -19,6 +19,7 @@ for names,category in re.findall(r'case (.*?) -> (WEAPON|SIGNAL);',category_sour
 groups=[0 if not e.get('module') else {'SIGNAL':1,'WEAPON':2}.get(categories.get(e['module']),3) for e in catalog['entries']]
 assert groups==sorted(groups), 'All must group Guides, Signals, Attacks and Functions'
 assert [e['id'] for e in catalog['entries'] if not e.get('module')][-1]=='server_limits', 'Resource limits must be the final Guide'
+assert ids[ids.index('server_limits')-1]=='command_wand', 'Command Wand must appear directly before resource limits'
 for entry in catalog['entries']:
     if entry['id']=='getting_started':continue
     key=f'manual.sablelife.{entry["id"]}.brief_usage'

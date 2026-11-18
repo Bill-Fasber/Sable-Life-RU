@@ -1,6 +1,7 @@
 package dev.sablelife.combat;
 
 import dev.sablelife.compat.sable.SableBodyProbe;
+import dev.sablelife.compat.letitwalk.WalkerLegDamage;
 import dev.sablelife.heart.HeartBlockEntity;
 import dev.sablelife.heart.HeartHealth;
 import dev.sablelife.heart.HeartState;
@@ -42,13 +43,23 @@ public final class BodyCombat {
 
     private BodyCombat() {}
 
+    public static HeartBlockEntity findDamageHeart(net.minecraft.world.level.Level level, BlockPos hit) {
+        var nativeHeart = SableBodyProbe.findActivatedHeart(level, hit);
+        if (nativeHeart != null || !(level instanceof ServerLevel server)) return nativeHeart;
+        return WalkerLegDamage.owner(server, hit);
+    }
+
+    public static boolean ownsDamageBlock(ServerLevel level, HeartBlockEntity heart, BlockPos hit) {
+        return heart.creatureId().equals(BodyOwnership.get(level).owner(hit)) || WalkerLegDamage.owner(level, hit) == heart;
+    }
+
     public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
         if (event.isCanceled() || event.getEntity().isSpectator()) return;
         if (event.getEntity().isCreative() && event.getLevel().getBlockState(event.getPos()).getBlock() instanceof dev.sablelife.heart.HeartBlock) {
             if (!event.getEntity().isShiftKeyDown()) event.setCanceled(true);
             return;
         }
-        var heart = SableBodyProbe.findActivatedHeart(event.getLevel(), event.getPos());
+        var heart = findDamageHeart(event.getLevel(), event.getPos());
         if (heart == null || isMiningTool(event.getItemStack()) && heart.allowBreaking()) return;
 
         // Cancel on both sides: a punch/sword hit should not instantly erase a body block in creative.
@@ -78,7 +89,7 @@ public final class BodyCombat {
         damage += enchantmentBonus * strength;
         if (!Float.isFinite(damage) || damage <= 0) return;
         float before = heart.health().current();
-        if (!heart.modules().damageBoxes.bodyDamage(heart,player,hit.getBlockPos(),Math.min(damage,HeartHealth.MAX_CONFIGURED_HEALTH),false,false)) return;
+        if (!heart.modules().damageBoxes.bodyDamage(heart,player,hit.getBlockPos(),Math.min(damage,HeartHealth.MAX_CONFIGURED_HEALTH),false,false,dev.sablelife.module.ArmorRules.HitType.MELEE)) return;
         LAST_MELEE_TICK.put(player, now);
         player.resetAttackStrengthTicker();
         feedback((ServerLevel) player.level(), hit, heart, before - heart.health().current(), player, critical);
@@ -134,7 +145,7 @@ public final class BodyCombat {
         if (event.isCanceled() || !(event.getProjectile() instanceof AbstractArrow arrow)
                 || !(arrow.level() instanceof ServerLevel level) || arrow.isRemoved()
                 || !(event.getRayTraceResult() instanceof BlockHitResult hit) || hit.getType() != HitResult.Type.BLOCK) return;
-        var heart = SableBodyProbe.findActivatedHeart(level, hit.getBlockPos());
+        var heart = findDamageHeart(level, hit.getBlockPos());
         if (heart == null || heart.health().state() != HeartState.ALIVE) return;
         var attribution = arrow.getPersistentData();
         if (attribution.hasUUID("SableLifeAttackOwner") && !heart.acceptsLifeAttack(attribution.getUUID("SableLifeAttackOwner"))) return;
@@ -150,7 +161,7 @@ public final class BodyCombat {
         int damage = Mth.ceil(Math.min(rawDamage, HeartHealth.MAX_CONFIGURED_HEALTH));
         if (arrow.isCritArrow()) damage += arrow.getRandom().nextInt(damage / 2 + 2);
         float before = heart.health().current();
-        if (!heart.modules().damageBoxes.bodyDamage(heart,arrow,hit.getBlockPos(),Math.min(damage,HeartHealth.MAX_CONFIGURED_HEALTH),true,false)) return;
+        if (!heart.modules().damageBoxes.bodyDamage(heart,arrow,hit.getBlockPos(),Math.min(damage,HeartHealth.MAX_CONFIGURED_HEALTH),true,false,true)) return;
         dev.sablelife.attack.AttackHitCredit.record(arrow,Math.max(0,before-heart.health().current()));
         hits.putBoolean(creature, true);
         arrow.getPersistentData().put(ARROW_HITS, hits);

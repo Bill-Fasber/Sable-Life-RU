@@ -57,3 +57,6 @@ config="sablelife.epicfight.mixins.json"
 
 [[mixins]]
 config="sablelife.photomancy.mixins.json"
+
+[[mixins]]
+config="sablelife.littletiles.mixins.json"

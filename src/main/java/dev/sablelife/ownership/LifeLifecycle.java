@@ -64,6 +64,7 @@ public final class LifeLifecycle extends SavedData {
     public boolean explodable(UUID id) { return !explosionProtected.contains(id); }
     public void cancel(UUID id) { deaths.entrySet().removeIf(e -> e.getKey().equals(id) || id.equals(e.getValue().parent)); completed.entrySet().removeIf(e->e.getKey().equals(id)||id.equals(e.getValue().parent)); unbreakable.remove(id); explosionProtected.remove(id);interactionAllowed.remove(id);miningDrops.remove(id); setDirty(); }
     public boolean isDying(UUID id) { return recorded(id); }
+    public boolean naturalRemovalPending(UUID id) { var death = deaths.get(id); return death != null && death.naturalRemoval; }
     public boolean finished(UUID id){return completed.containsKey(id)&&deaths.values().stream().noneMatch(d->id.equals(d.parent));}
     public boolean deathDue(UUID id){var job=deaths.get(id);return job!=null&&!job.cleaned&&job.remaining==0;}
     public Vec3 rewardPoint(UUID id,ResourceLocation dimension){var job=deaths.get(id);return job!=null&&!job.rewarded&&job.dimension.equals(dimension)?job.point:null;}
@@ -98,10 +99,15 @@ public final class LifeLifecycle extends SavedData {
         deaths.put(id, death); setDirty(); return true;
     }
     public boolean scheduleNaturalRemoval(HeartBlockEntity heart) {
-        if (!(heart.getLevel() instanceof ServerLevel level) || recorded(heart.creatureId())) return false;
-        var point = SableBodyProbe.toWorld(level, heart.getBlockPos().getCenter());
-        deaths.put(heart.creatureId(), new Death(level.dimension().location(), point, 0,
-                ResourceLocation.withDefaultNamespace("empty"), 0, true));
+        if (!(heart.getLevel() instanceof ServerLevel level)) return false;
+        return scheduleNaturalRemoval(level, heart.creatureId(), SableBodyProbe.toWorld(level, heart.getBlockPos().getCenter()));
+    }
+    boolean scheduleNaturalRemoval(ServerLevel level, UUID owner, Vec3 point) {
+        if (recorded(owner)) return false;
+        var death = new Death(level.dimension().location(), point, 0, ResourceLocation.withDefaultNamespace("empty"), 0, true);
+        death.presentationPlayed = true;
+        death.naturalRemoval = true;
+        deaths.put(owner, death);
         setDirty();
         return true;
     }
@@ -175,50 +181,60 @@ public final class LifeLifecycle extends SavedData {
             var death = entry.getValue();
             if (death.cleaned && death.rewarded) {complete(entry.getKey(),death);continue;}
             if (death.remaining > 0) { death.remaining--; setDirty(); continue; }
-            var effect=death.effect;if(effect==null){effect=new dev.sablelife.heart.DeathPresentation(true);effect.load(death.presentation);death.effect=effect;}
-            if(!death.presentationPlayed) {
-                var level=server.getLevel(ResourceKey.create(Registries.DIMENSION,death.dimension));
-                if(level!=null&&level.hasChunkAt(BlockPos.containing(death.point))) {
-                    effect.playSound(level,death.point,entry.getKey());death.presentationPlayed=true;setDirty();
-                }
-            }
-            // Never force-load chunks. Their registered blocks stay protected and are retried on later ticks.
-            if(!death.cleaned&&!death.wholeFallback&&wholeSlots>0&&server.overworld().getGameTime()>=death.nextWholeAttempt){
-                wholeSlots--;
-                var result=WholeLifeDeletion.attempt(server,entry.getKey(),death.parent!=null,death.parent==null?effect:null);
-                if(result==WholeLifeDeletion.Outcome.DONE){death.cleaned=true;setDirty();}
-                else if(result==WholeLifeDeletion.Outcome.FALLBACK){death.wholeFallback=true;setDirty();}
-                else death.nextWholeAttempt=server.overworld().getGameTime()+20;
-            }
-            if (!death.cleaned&&death.wholeFallback) {
-                boolean pending = false;
-                for (var level : server.getAllLevels()) {
-                    var ownership = BodyOwnership.get(level);
-                    if(remainingBlocks>0&&remainingVisits>0){
-                        var work=ownership.cleanBudgeted(level,entry.getKey(),remainingBlocks,remainingVisits,death.parent!=null,death.parent==null?effect:null,true);
-                        remainingBlocks-=work.removed();remainingVisits-=work.visited();
+            if (server.overworld().getGameTime() < death.retryCleanupAt) continue;
+            try {
+                var effect=death.effect;if(effect==null){effect=new dev.sablelife.heart.DeathPresentation(true);effect.load(death.presentation);death.effect=effect;}
+                if(!death.presentationPlayed) {
+                    var level=server.getLevel(ResourceKey.create(Registries.DIMENSION,death.dimension));
+                    if(level!=null&&level.hasChunkAt(BlockPos.containing(death.point))) {
+                        death.presentationPlayed=true;setDirty();
+                        effect.playSound(level,death.point,entry.getKey());
                     }
-                    pending |= death.parent == null ? ownership.hasOwned(entry.getKey()) : ownership.hasPart(entry.getKey());
                 }
-                if (!pending) { death.cleaned = true; setDirty(); }
+                // Never force-load chunks. Their registered blocks stay protected and are retried on later ticks.
+                if(!death.cleaned&&!death.wholeFallback&&wholeSlots>0&&server.overworld().getGameTime()>=death.nextWholeAttempt){
+                    wholeSlots--;
+                    var result=WholeLifeDeletion.attempt(server,entry.getKey(),death.parent!=null,death.parent==null?effect:null);
+                    if(result==WholeLifeDeletion.Outcome.DONE){death.cleaned=true;setDirty();}
+                    else if(result==WholeLifeDeletion.Outcome.FALLBACK){death.wholeFallback=true;setDirty();}
+                    else death.nextWholeAttempt=server.overworld().getGameTime()+20;
+                }
+                if (!death.cleaned&&death.wholeFallback) {
+                    boolean pending = false;
+                    for (var level : server.getAllLevels()) {
+                        var ownership = BodyOwnership.get(level);
+                        if(remainingBlocks>0&&remainingVisits>0){
+                            int blockBudget = remainingBlocks, visitBudget = remainingVisits;
+                            // A failed batch may have already consumed part of its budget.
+                            remainingBlocks = remainingVisits = 0;
+                            var work=ownership.cleanBudgeted(level,entry.getKey(),blockBudget,visitBudget,death.parent!=null,death.parent==null?effect:null,true);
+                            remainingBlocks=blockBudget-work.removed();remainingVisits=visitBudget-work.visited();
+                        }
+                        pending |= death.parent == null ? ownership.hasOwned(entry.getKey()) : ownership.hasPart(entry.getKey());
+                    }
+                    if (!pending) { death.cleaned = true; setDirty(); }
+                }
+                if (death.rewarded) {if(death.cleaned)complete(entry.getKey(),death);continue;}
+                var level = server.getLevel(ResourceKey.create(Registries.DIMENSION, death.dimension));
+                if (level == null || !level.hasChunkAt(BlockPos.containing(death.point))) continue;
+                death.rewarded = true;
+                setDirty();
+                var loot = server.reloadableRegistries().getLootTable(ResourceKey.create(Registries.LOOT_TABLE, death.loot));
+                var params = new LootParams.Builder(level).withParameter(LootContextParams.ORIGIN, death.point).create(LootContextParamSets.CHEST);
+                for (var stack : death.templates == null ? loot.getRandomItems(params)
+                        : dev.sablelife.part.LootSelection.draw(death.templates, death.chances, death.weights,
+                                death.weighted, death.rolls, level.random)) {
+                    if (stack.isEmpty()) continue;
+                    var item = new ItemEntity(level, death.point.x, death.point.y, death.point.z, stack.copy());
+                    item.setDefaultPickUpDelay();
+                    level.addFreshEntity(item);
+                }
+                if(death.experience>0){if(death.experienceLevels)dev.sablelife.heart.LevelRewardOrb.award(level,death.point,dev.sablelife.heart.ExperienceUnits.levels(death.experience));else ExperienceOrb.award(level,death.point,death.experience);}
+                if(death.cleaned)complete(entry.getKey(),death);
+            } catch (RuntimeException | LinkageError failure) {
+                death.retryCleanupAt = server.overworld().getGameTime() + 100;
+                com.mojang.logging.LogUtils.getLogger().error("Death cleanup job {} failed. Retrying in 100 ticks.", entry.getKey(), failure);
             }
-            if (death.rewarded) {if(death.cleaned)complete(entry.getKey(),death);continue;}
-            var level = server.getLevel(ResourceKey.create(Registries.DIMENSION, death.dimension));
-            if (level == null || !level.hasChunkAt(BlockPos.containing(death.point))) continue;
-            death.rewarded = true;
-            setDirty();
-            var loot = server.reloadableRegistries().getLootTable(ResourceKey.create(Registries.LOOT_TABLE, death.loot));
-            var params = new LootParams.Builder(level).withParameter(LootContextParams.ORIGIN, death.point).create(LootContextParamSets.CHEST);
-            for (var stack : death.templates == null ? loot.getRandomItems(params)
-                    : dev.sablelife.part.LootSelection.draw(death.templates, death.chances, death.weights,
-                            death.weighted, death.rolls, level.random)) {
-                if (stack.isEmpty()) continue;
-                var item = new ItemEntity(level, death.point.x, death.point.y, death.point.z, stack.copy());
-                item.setDefaultPickUpDelay();
-                level.addFreshEntity(item);
-            }
-            if(death.experience>0){if(death.experienceLevels)dev.sablelife.heart.LevelRewardOrb.award(level,death.point,dev.sablelife.heart.ExperienceUnits.levels(death.experience));else ExperienceOrb.award(level,death.point,death.experience);}
-            if(death.cleaned)complete(entry.getKey(),death);
         }
     }
     private static final class Death {
@@ -227,9 +243,11 @@ public final class LifeLifecycle extends SavedData {
         final int experience;
         int remaining;
         boolean rewarded;
+        boolean naturalRemoval;
         boolean cleaned;
         boolean wholeFallback;
         transient long nextWholeAttempt;
+        transient long retryCleanupAt;
         boolean forceLoading;
         boolean experienceLevels;
         CompoundTag presentation=new CompoundTag();
@@ -263,6 +281,7 @@ public final class LifeLifecycle extends SavedData {
                         Math.clamp(job.getInt("Remaining"), 0, job.hasUUID("Parent")?12000:dev.sablelife.heart.HeartHealth.MAX_DEATH_DELAY), loot, Math.clamp(job.getInt("Experience"), 0, job.hasUUID("Parent")?10000:dev.sablelife.heart.ExperienceUnits.MAX_POINTS), job.getBoolean("Rewarded"));
                 death.wholeFallback=job.getBoolean("WholeFallback");death.cleaned = job.getBoolean("Cleaned");death.experienceLevels=job.getBoolean("ExperienceLevels");
                 death.forceLoading=job.getBoolean("ForceLoading");
+                death.naturalRemoval=job.getBoolean("NaturalRemoval");
                 death.presentation=job.getCompound("Presentation").copy();death.presentationPlayed=job.getBoolean("PresentationPlayed");
                 death.parent = job.hasUUID("Parent") ? job.getUUID("Parent") : null;
                 death.partName = job.getString("PartName");
@@ -302,6 +321,7 @@ public final class LifeLifecycle extends SavedData {
             job.putDouble("X", death.point.x); job.putDouble("Y", death.point.y); job.putDouble("Z", death.point.z);
             job.putInt("Remaining", death.remaining); job.putInt("Experience", death.experience);job.putBoolean("ExperienceLevels",death.experienceLevels); job.putBoolean("Rewarded", death.rewarded);
             job.putBoolean("WholeFallback",death.wholeFallback);job.putBoolean("Cleaned", death.cleaned);job.putBoolean("ForceLoading",death.forceLoading);
+            if(death.naturalRemoval)job.putBoolean("NaturalRemoval",true);
             job.put("Presentation",death.presentation.copy());job.putBoolean("PresentationPlayed",death.presentationPlayed);
             if (death.parent != null) { job.putUUID("Parent", death.parent); job.putString("PartName", death.partName); }
             if (death.templates != null) {

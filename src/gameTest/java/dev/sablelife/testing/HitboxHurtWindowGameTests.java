@@ -47,7 +47,7 @@ public final class HitboxHurtWindowGameTests {
     }
     @GameTest(template="combat",batch="hitbox_window_stronger",timeoutTicks=30)
     public static void StrongerContactOnlyAddsTheRawDifferenceBeforePartArmor(GameTestHelper h){
-        var core=core(h);var armor=core.modules().add("armor");armor.anchors(core.modules().all().getFirst().anchors());var rule=armor.armorRules().add();rule.edit("channel",core.wireless().add()+1);rule.edit("when",1);rule.edit("modifier",-50);
+        var core=core(h);var armor=core.modules().add("armor");armor.anchors(core.modules().all().getFirst().anchors());var rule=armor.armorRules().add();var armorChannel=core.wireless().add();core.wireless().channel(armorChannel).set(0,0);rule.edit("channel",armorChannel+1);rule.edit("when",1);rule.edit("modifier",-50);
         var source=h.getLevel().damageSources().mobAttack(EntityType.ZOMBIE.create(h.getLevel()));hit(core,source,20);hp(h,core,990);
         h.runAfterDelay(1,()->{hit(core,source,30);hp(h,core,985);});
         h.runAfterDelay(2,()->{hit(core,source,30);hp(h,core,985);h.succeed();});

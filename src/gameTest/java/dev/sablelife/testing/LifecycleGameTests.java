@@ -17,15 +17,71 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.common.util.FakePlayerFactory;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
+import net.neoforged.neoforge.registries.DeferredBlock;
+import net.neoforged.neoforge.registries.DeferredRegister;
 import java.util.List;
+import java.util.UUID;
 
 @GameTestHolder("sablelife_lifecycle_tests")
 @PrefixGameTestTemplate(false)
 public final class LifecycleGameTests {
+    static final DeferredRegister.Blocks BLOCKS = DeferredRegister.createBlocks("sablelife_tests");
+    private static BlockPos failRemovalAt;
+    private static final DeferredBlock<Block> CLEANUP_TEST_BLOCK = BLOCKS.register("cleanup_test_block",
+            () -> new Block(Block.Properties.of()) {
+                @Override public void onRemove(BlockState state, Level level, BlockPos pos, BlockState replacement, boolean moved) {
+                    if (pos.equals(failRemovalAt)) {
+                        failRemovalAt = null;
+                        throw new IllegalStateException("Test mod block removal");
+                    }
+                    super.onRemove(state, level, pos, replacement, moved);
+                }
+            });
+
+    @GameTest(template = "combat", batch = "lifecycle_failure_isolation", timeoutTicks = 150)
+    public static void removalFailureRetainsTheJobAndAllowsOtherCleanup(GameTestHelper helper) {
+        var level = helper.getLevel();
+        var broken = helper.absolutePos(new BlockPos(2, 5, 2));
+        var healthy = helper.absolutePos(new BlockPos(4, 5, 2));
+        level.setBlockAndUpdate(broken, CLEANUP_TEST_BLOCK.get().defaultBlockState());
+        level.setBlockAndUpdate(healthy, Blocks.IRON_BLOCK.defaultBlockState());
+        var data = LifeLifecycle.get(level.getServer());
+        var ownership = BodyOwnership.get(level);
+        UUID brokenId = UUID.randomUUID(), healthyId = UUID.randomUUID();
+        bindCleanupPart(ownership, broken, brokenId);
+        bindCleanupPart(ownership, healthy, healthyId);
+        var loot = ResourceLocation.withDefaultNamespace("empty");
+        helper.assertTrue(data.schedulePart(level, brokenId, UUID.randomUUID(), "broken", broken.getCenter(), 0, loot, 0),
+                "Failed to schedule faulty block cleanup");
+        helper.assertTrue(data.schedulePart(level, healthyId, UUID.randomUUID(), "healthy", healthy.getCenter(), 0, loot, 0),
+                "Failed to schedule independent cleanup");
+        failRemovalAt = broken;
+        helper.runAfterDelay(5, () -> {
+            helper.assertTrue(failRemovalAt == null, "The block removal hook did not run");
+            helper.assertTrue(level.getBlockState(healthy).isAir() && data.finished(healthyId), "One failure stopped the other cleanup");
+            helper.assertTrue(!data.finished(brokenId), "The failed job was incorrectly marked complete");
+            var saved = data.save(new CompoundTag(), level.registryAccess());
+            var reloaded = LifeLifecycle.load(saved, level.registryAccess());
+            helper.assertTrue(reloaded.deathDue(brokenId), "The failed job was lost on save and load");
+        });
+        helper.succeedWhen(() -> {
+            helper.assertTrue(data.finished(brokenId), "Waiting for failed cleanup to retry");
+            helper.assertTrue(level.getBlockState(broken).isAir() && !ownership.hasPart(brokenId), "Retry retained the failed part");
+        });
+    }
+
+    private static void bindCleanupPart(BodyOwnership ownership, BlockPos pos, UUID part) {
+        ownership.bind(pos, UUID.randomUUID());
+        ownership.bindPart(pos, part);
+    }
+
     @GameTest(template = "combat", batch="lifecycle_cleanup", timeoutTicks = 100)
     public static void lethalDamageCleansBodyAndDetachedFragmentOnce(GameTestHelper helper) {
         var heart = fixture(helper, true);

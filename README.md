@@ -6,9 +6,9 @@ Downloads, screenshots and the full gameplay description are available on [Curse
 
 ## Current Version
 
-**0.1.404-groups-test3** · GitHub pre-release
+**0.1.440**
 
-[中文更新清单](docs/releases/0.1.404-groups-test3.md) · [English changelog](docs/releases/0.1.404-groups-test3_EN.md) · [Stress-test results](docs/performance/STRESS_TESTS_EN.md)
+[中文更新清单](docs/releases/0.1.440.md) · [English changelog](docs/releases/0.1.440_EN.md) · [Stress-test results](docs/performance/STRESS_TESTS_EN.md)
 
 Minecraft **1.21.1** · **NeoForge** · **Java 21**
 
@@ -55,8 +55,22 @@ Combat integration versions:
 | Iron's Spells 'n Spellbooks | **1.21.1-3.16.3**; its bridge is enabled only for this exact version. |
 | TaCZ | Pinned test artifact: **NeoForge 1.1.8-hotfix-r7**, an unofficial Minecraft 1.21.1 port. |
 | Create Big Cannons (CBC) | Pinned test version: **5.11.7**, with Ritchie's Projectile Library **2.1.2**. |
+| Create: Gunsmithing | Tested damage integration with **1.4.9** and **NTGL 3.2.0**. |
+| TaCZ Tactical Breaching | Tested with **1.0.5 / 1.0.7** and TaCZ **1.1.8-hotfix-r7 / 1.2.0**. Restores canceled structure-hit damage while retaining Breaching's penetration and destruction handling. |
+| Let it Walk! | Optional **0.1.5** attached-part damage integration for attached legs and arms, with per-core projectile/explosion deduplication. Child parts serve as damage receivers; this does not make them independent module-marking targets. |
+| LittleTiles | Optional client mesh recovery for **1.6.0-pre235 / pre239**, CreativeCore **2.13.54**, and Sable **2.0.5 / 2.0.6**. Covers identified mesh-loss paths; version/interface mismatches skip the adapter. |
 
 The exact-version gates above apply to Epic Fight and Iron's Spells. The TaCZ/CBC entries describe the pinned test environment, not an assertion that every other version works.
+
+### LittleTiles rendering
+
+The built-in client adapter recovers identified LittleTiles mesh-loss and upload-failure paths on active Sable structures. Checks include normal rendering and Iris **1.8.14-beta.1** / Sodium **0.8.13**. The original intermittent trigger in the reported large modpack was not fully reproduced; this is targeted recovery rather than a claim that all rendering conflicts are resolved. Remove the older standalone mesh-recovery addon when using the built-in adapter. Missing dependencies or unsupported versions/interfaces leave this adapter disabled.
+
+### Claim permissions and Core Remote
+
+Core Remote checks **AeroClaims 0.9.5** permissions through its supported API. Supported permission denials and failed checks continue to block access.
+
+Other detected claim integrations, including FTB Chunks and Open Parties and Claims, are not covered by that permission adapter. Core Remote and remote Inspection Tool access are blocked by default when such an integration is unavailable. Server owners can explicitly allow this access by setting `allowCoreRemoteWithUnsupportedClaims = true` in the current world's `serverconfig/sablelife-server.toml`. This enables remote use without a supported claim-permission check for those integrations. Core editing eligibility, binding reach, dimension, loading and world protection checks still apply; supported AeroClaims permissions remain enforced. This setting is not native FTB Chunks or Open Parties and Claims permission integration.
 
 ### CBC addon coverage
 
@@ -82,7 +96,7 @@ For addon authors, see the [public body combat API guide](docs/COMBAT_API.md) fo
 
 - **Java addons** can register custom modules with the public module API. See the [API guide](docs/MODULE_ADDON_API.md) and the [Marker Chime example](examples/module-addon/).
 - **Datapacks** can define modules in JSON using supported actions. The initial format supports a sound action when the module starts. See the [datapack guide](docs/DATAPACK_MODULES.md) and the [Alarm example](examples/datapack-alarm/).
-- Get the main mod and both example downloads from the [0.1.404 GitHub release](https://github.com/MingjieZg/Sable-Life/releases/tag/v0.1.404).
+- The original Marker Chime and Alarm example downloads remain available from the [0.1.404 GitHub release](https://github.com/MingjieZg/Sable-Life/releases/tag/v0.1.404). The module API and Datapack format retain compatibility with those examples.
 
 ## Server Module Configuration
 

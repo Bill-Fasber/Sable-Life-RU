@@ -38,11 +38,11 @@ public final class ModuleHurt {
         states.entrySet().removeIf(e->{var m=heart.modules().find(e.getKey());return m==null || m.value("trigger")!=5 || !HeartModules.status(m,heart).equals("valid");});
         for(var e:states.entrySet()) {
             var s=e.getValue(); var m=heart.modules().find(e.getKey());
-            if(s.pending) { s.pending=false; s.active=true; s.started=false; s.end=m.value("hurtMode")==2 || once(m)&&m.type().equals("move_set") ? Long.MAX_VALUE : now+(m.value("hurtMode")==1 ? (long)m.value("hurtDuration") : onceTicks(m)); }
+            if(s.pending) { s.pending=false; s.active=true; s.started=false; s.end=m.value("hurtMode")==2 || once(m)&&m.type().equals("move_set") ? Long.MAX_VALUE : now+(m.value("hurtMode")==1 ? (long)m.value("hurtDuration") : onceTicks(heart,m)); }
             else if(s.active && now>=s.end) s.active=false;
         }
     }
-    private static long onceTicks(VirtualModule m) {
+    private static long onceTicks(HeartBlockEntity heart, VirtualModule m) {
         return Math.max(1,(long)Math.ceil(switch(m.type()) {
             case "distortion_trail" -> m.value("trailLife")+1;
             case "slash" -> m.value("range")/m.value("slashSpeed")*20+3;
@@ -53,9 +53,25 @@ public final class ModuleHurt {
             case "pull" -> m.value("pullWarning")+m.value("pullDuration")+6;
             case "quake" -> m.value("warningTime")+m.value("quakeRange")/m.value("quakeSpeed")+(m.value("quakeWaves")-1)*m.value("quakeGap")+16;
             case "ground_strike" -> m.value("warningTime")+Math.max(m.value("strikeRandomCount"),m.value("strikeRange")/m.value("strikeStep")+2)*m.value("waveDelay")+m.value("strikeHeight")/m.value("strikeSpeed")+3;
-            case "linear_movement" -> m.value("chargeTime")+(m.value("linearMode")==1?(m.value("moveAim")==1?m.value("moveTargetRange"):m.value("moveDistance"))/m.value("travelSpeed")*20:0)+4;
+            case "signal_turn" -> {
+                if (m.value("turnMode") == 0 || m.value("turnSpeed") == 0) yield 1;
+                double maximumAngle = Math.max(Math.abs(m.value("turnMinYaw")), Math.abs(m.value("turnMaxYaw")));
+                yield Math.min(12000, 20 + maximumAngle / m.value("turnSpeed") * 20);
+            }
+            case "linear_movement" -> {
+                if (m.value("linearMode") == 0) yield m.value("chargeTime") + 4;
+                double distance = m.value("moveAim") == 1 ? m.value("moveTargetRange") : m.value("moveDistance");
+                if (ModuleLinearMovement.worldDestination(m) || heart.getLevel() instanceof net.minecraft.server.level.ServerLevel level
+                        && heart.modules().commandTarget().current(level, CommandTarget.LINEAR_MOVEMENT) != null) {
+                    var plan = ModuleLinearMovement.plan(heart, m);
+                    distance = plan == null ? 0 : plan.delta().length();
+                }
+                yield m.value("chargeTime") + distance / m.value("travelSpeed") * 20 + 4;
+            }
+            case "propulsion" -> m.value("propMode")==1?m.value("propDuration")+2:1;
+            case "motion_damping" -> m.value("dampMode")==1?m.value("dampDuration")+2:1;
             case "sequence" -> m.sequence().stream().mapToLong(PulseSequence.Step::ticks).sum()+2;
-            case "arena" -> m.value("countdown")+2;
+            case "arena" -> ModuleArena.warningTicks(m)+2;
             default -> 1;
         }));
     }

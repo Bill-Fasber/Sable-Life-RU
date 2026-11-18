@@ -45,7 +45,14 @@ public final class MoveSetScreen extends AbstractContainerScreen<HeartDashboardM
     private Component moveName(MoveSet.Move m){return m.config().name().isBlank()?Component.translatable("moveset.sablelife.move_number",moves.indexOf(m)+1):Component.literal(m.config().name());}
     private MoveSet.Move current(){return moves.stream().filter(m->m.config().id().equals(selected)).findFirst().orElse(null);}
     private List<MoveSet.Move> filtered(){return moves.stream().filter(m->moveName(m).getString().toLowerCase(Locale.ROOT).contains(searchText.toLowerCase(Locale.ROOT))).toList();}
-    private List<VirtualModule> candidates(){return modules.stream().filter(m->MoveSet.supportsModule(m.type())&&(!snapshot.getBoolean("ControlCore")||dev.sablelife.heart.RedstoneCorePolicy.allowed(m))&&moduleName(m).getString().toLowerCase(Locale.ROOT).contains(pickerText.toLowerCase(Locale.ROOT))).toList();}
+    private List<VirtualModule> candidates() {
+        String query = pickerText.toLowerCase(Locale.ROOT);
+        return modules.stream().filter(module -> MoveSet.supportsModule(module.type())
+                && (!snapshot.getBoolean("ControlCore") || dev.sablelife.heart.RedstoneCorePolicy.allowed(module))
+                && (!module.type().equals("message_display") || HeartDashboardMenu.messageEditable(snapshot)
+                    && snapshot.getList("AvailableTypes", 8).stream().anyMatch(type -> type.getAsString().equals("message_display")))
+                && moduleName(module).getString().toLowerCase(Locale.ROOT).contains(query)).toList();
+    }
     private VirtualModule target(UUID id){return modules.stream().filter(m->m.id().equals(id)).findFirst().orElse(null);}
     private Button button(Component label,int x,int y,int w,int h,Runnable run){return addRenderableWidget(LifeUiStyle.button(label,leftPos+x,topPos+y,w,h,run));}
     private EditBox input(int x,int y,int w,int max,Component label){var b=addRenderableWidget(new EditBox(font,leftPos+x,topPos+y,w,16,label));b.setMaxLength(max);return b;}

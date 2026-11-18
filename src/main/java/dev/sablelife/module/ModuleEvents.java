@@ -33,12 +33,14 @@ public final class ModuleEvents {
     private final Set<UUID> sensorOutputIds=new HashSet<>();
     private final Set<UUID> sensorTargets=new HashSet<>();
     private final Set<UUID> sensorPowered=new HashSet<>();
+    private record SensorSelection(long tick, int revision, LivingEntity target) {}
+    private final Map<UUID, SensorSelection> sensorSelections = new HashMap<>();
     public boolean sensorDetected(UUID id){return sensorTargets.contains(id);}
     public boolean sensorPowered(UUID id){return sensorPowered.contains(id);}
     public long emittedSounds() { return emitted; }
     public void clear() {
         if (owner != null) { sounds.forEach((id, state) -> stopAudio(owner, id, state)); ModuleSignals.clear(owner); owner.wireless().programOutputs("sensor",Map.of());owner.wireless().programOutputs("navigation",Map.of());owner.wireless().clearModuleFrequencies(sensorOutputIds); }
-        sensorOutputIds.clear();sensorTargets.clear();sensorPowered.clear(); sounds.clear(); redstone.clear(); navigation.clear(); owner = null;
+        sensorOutputIds.clear();sensorTargets.clear();sensorPowered.clear();sensorSelections.clear(); sounds.clear(); redstone.clear(); navigation.clear(); owner = null;
     }
     public static boolean supported(String type) { return type.equals("sensor") || type.equals("sound") || type.equals("trigger_sound") || type.equals("bgm") || type.equals("navigation"); }
     public void tick(HeartBlockEntity heart) {
@@ -55,8 +57,7 @@ public final class ModuleEvents {
             if(module.type().equals("sensor"))sensorOutputIds.add(module.id());
             if (!supported(module.type())) continue;
             if(heart.isControlCore()&&!dev.sablelife.heart.RedstoneCorePolicy.allowed(module))continue;
-            if (heart.health().state() == HeartState.ALIVE && !module.detached()
-                    && HeartModules.status(module, heart).equals("disconnected")) { module.detach(); heart.setChanged(); }
+            HeartModules.latchDetachedMark(module, heart);
             if (module.type().equals("trigger_sound")) {
                 // Retain state while power is off: cooldown persists and one-shot roars finish naturally.
                 // Invalid/disabled/dead modules are excluded and their audio is stopped below.
@@ -116,9 +117,12 @@ public final class ModuleEvents {
         while (iterator.hasNext()) { var entry = iterator.next(); if (!activeSounds.contains(entry.getKey())) { stopAudio(heart, entry.getKey(), entry.getValue()); iterator.remove(); } }
         heart.wireless().programOutputs("navigation",navigationChannels,trace);
         redstone.tick(heart, weakFaces,sensorPowered);
+        heart.wireless().collectOutputFaces(weakFaces);
         ModuleSignals.updateWeakFaces(heart, weakFaces);
         ModuleSignals.update(heart, Map.of());
         navigation.retain(activeNavigation);
+        sensorSelections.entrySet().removeIf(entry -> entry.getValue().tick() != level.getGameTime()
+                || !sensorOutputIds.contains(entry.getKey()));
         ModuleSignals.updateFaces(heart, faceSignals);
     }
     private void triggerSound(ServerLevel level, HeartBlockEntity heart, VirtualModule module, State state, boolean powered) {
@@ -225,16 +229,46 @@ public final class ModuleEvents {
         return along >= 0 && along <= module.value("radius") && delta.subtract(forward.scale(along)).lengthSqr() <= width * width;
     }
     private boolean detect(ServerLevel level, HeartBlockEntity heart, VirtualModule module) {
-        var center = module.anchors().getFirst().world(heart, false);
-        for (var target : ModuleTargets.queryForModule(level, heart, module, new AABB(center, center).inflate(module.value("radius") + 2),
-                e -> e.isAlive() && !e.isSpectator() && !(e instanceof Player p && p.isCreative()&&module.value("target")!=4))) {
-            if (!ModuleTargets.matches(target,module)) continue;
-            var point = SableBodyProbe.toWorld(level, target.getBoundingBox().getCenter()); var delta = point.subtract(center);
-            if (!withinShape(heart, module, delta)) continue;
-            if (module.value("lineOfSight") == 0 && delta.lengthSqr() > .0001 && !ModuleTargets.visible(level,heart.creatureId(),dev.sablelife.sense.SensorGeometry.sightStart(center,point.subtract(center),new org.joml.Quaterniond(module.anchors().getFirst().body(heart).logicalPose().orientation())),target)) continue;
-            return true;
+        var selection = sensorSelections.get(module.id());
+        if (selection != null && selection.tick() == level.getGameTime() && selection.revision() == heart.modules().revision())
+            return selection.target() != null && selection.target().isAlive() && !selection.target().isRemoved();
+        return sensorCandidates(level, heart, module).findAny().isPresent();
+    }
+
+    /** Resolve one shared target per sensor and tick, including when several facing controllers use it. */
+    public LivingEntity sensorTarget(HeartBlockEntity heart, UUID id) {
+        if (id == null || !(heart.getLevel() instanceof ServerLevel level)
+                || !heart.operational() || !heart.wireless().master()) return null;
+        var sensor = heart.modules().find(id);
+        if (sensor == null || !sensor.type().equals("sensor") || !HeartModules.triggered(sensor, heart)) return null;
+        var selection = sensorSelections.get(id);
+        if (selection == null || selection.tick() != level.getGameTime() || selection.revision() != heart.modules().revision()) {
+            var center = sensor.anchors().getFirst().world(heart, false);
+            var target = sensorCandidates(level, heart, sensor)
+                    .min(ModuleTargets.comparator(heart, entity -> SableBodyProbe.toWorld(level,
+                            entity.getBoundingBox().getCenter()).distanceToSqr(center))
+                            .thenComparing(entity -> entity.getUUID().toString())).orElse(null);
+            selection = new SensorSelection(level.getGameTime(), heart.modules().revision(), target);
+            sensorSelections.put(id, selection);
         }
-        return false;
+        var target = selection.target();
+        return target == null || !target.isAlive() || target.isRemoved() || target.isSpectator() ? null : target;
+    }
+
+    private java.util.stream.Stream<LivingEntity> sensorCandidates(ServerLevel level, HeartBlockEntity heart, VirtualModule module) {
+        var center = module.anchors().getFirst().world(heart, false);
+        return ModuleTargets.queryForModule(level, heart, module, new AABB(center, center).inflate(module.value("radius") + 2),
+                target -> target.isAlive() && !target.isSpectator()
+                        && !(target instanceof Player player && player.isCreative() && module.value("target") != 4))
+                .stream().filter(target -> ModuleTargets.matches(target, module)).filter(target -> {
+                    var point = SableBodyProbe.toWorld(level, target.getBoundingBox().getCenter());
+                    var delta = point.subtract(center);
+                    if (!withinShape(heart, module, delta)) return false;
+                    if (module.value("lineOfSight") != 0 || delta.lengthSqr() <= .0001) return true;
+                    var orientation = new org.joml.Quaterniond(module.anchors().getFirst().body(heart).logicalPose().orientation());
+                    var start = dev.sablelife.sense.SensorGeometry.sightStart(center, delta, orientation);
+                    return ModuleTargets.visible(level, heart.creatureId(), start, target);
+                });
     }
     /** A life detector inside its own body must still see out; external walls remain opaque. */
     private boolean clearSight(ServerLevel level, HeartBlockEntity heart, VirtualModule module, Vec3 center, Vec3 point) {

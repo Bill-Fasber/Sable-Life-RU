@@ -29,17 +29,30 @@ public final class MoveRules {
         double next=Math.clamp(value,field.min(),field.max());if(field.scale()==20||field.choice()||key.equals("dispatchWeight"))next=Math.round(next);settings.putDouble(key,next);return true;
     }
     public CompoundTag save(){var tag=new CompoundTag();tag.putInt("Version",1);tag.putString("Type","move_rules");tag.putUUID("Id",id);tag.putString("Name",name);tag.putBoolean("Enabled",enabled);tag.put("Settings",settings.copy());return tag;}
-    public static MoveRules load(CompoundTag tag){var rules=new MoveRules(tag.hasUUID("Id")?tag.getUUID("Id"):UUID.randomUUID());rules.edit("name",0,tag.getString("Name"));rules.enabled=tag.getBoolean("Enabled");var saved=tag.getCompound("Settings");for(var f:ModuleFields.moveRules())if(saved.contains(f.key()))rules.edit(f.key(),saved.getDouble(f.key()),"");return rules;}
-    public boolean targetPresent(HeartBlockEntity heart) {
+    public static MoveRules load(CompoundTag tag){
+        var rules=new MoveRules(tag.hasUUID("Id")?tag.getUUID("Id"):UUID.randomUUID());
+        rules.edit("name",0,tag.getString("Name"));rules.enabled=tag.getBoolean("Enabled");
+        var saved=tag.getCompound("Settings");
+        rules.settings.putDouble("inheritMoveTarget", 0);
+        for(var f:ModuleFields.moveRules())if(saved.contains(f.key()))rules.edit(f.key(),saved.getDouble(f.key()),"");
+        return rules;
+    }
+    public boolean targetPresent(HeartBlockEntity heart) { return matchingTarget(heart, false) != null; }
+    UUID selectTarget(HeartBlockEntity heart) { return matchingTarget(heart, true); }
+
+    private UUID matchingTarget(HeartBlockEntity heart, boolean chooseBest) {
         var level = (ServerLevel) heart.getLevel();
         if (value("dispatchNear") > value("dispatchFar")
-                || !heart.isControlCore() && !HealthPhase.contains(heart.health().current(), heart.health().maximum(), value("phaseLower"), value("phaseUpper"))) return false;
+                || !heart.isControlCore() && !HealthPhase.contains(heart.health().current(), heart.health().maximum(), value("phaseLower"), value("phaseUpper"))) return null;
         var center = SableBodyProbe.toWorld(level, heart.getBlockPos().getCenter());
         var body = Sable.HELPER.getContaining(level, heart.getBlockPos());
         var directions = new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST};
         var local = Vec3.atLowerCornerOf(directions[(int) value("dispatchFront")].getNormal());
         var forward = body == null ? local : body.logicalPose().transformPosition(heart.getBlockPos().getCenter().add(local)).subtract(center).normalize();
         double far = value("dispatchFar"), near = value("dispatchNear");
+        UUID best = null;
+        int bestRank = Integer.MAX_VALUE;
+        double bestDistance = Double.POSITIVE_INFINITY;
         for (var victim : ModuleTargets.query(level, heart.creatureId(), new AABB(center, center).inflate(far))) {
             if (!ModuleTargets.matches(victim,(int)value("target"))) continue;
             var point = SableBodyProbe.toWorld(level, victim.getBoundingBox().getCenter()); var delta = point.subtract(center);
@@ -47,13 +60,20 @@ public final class MoveRules {
             if (distance < near || distance > far) continue;
             if (value("dispatchCone") < 360 && distance > .001
                     && forward.dot(delta.normalize()) < Math.cos(Math.toRadians(value("dispatchCone") / 2))) continue;
+            var id = victim.getUUID();
+            int rank = chooseBest ? ModuleTargets.rank(heart, victim) : 0;
+            if (best != null && (rank > bestRank || rank == bestRank
+                    && (distance > bestDistance || distance == bestDistance && id.compareTo(best) >= 0))) continue;
             if (value("lineOfSight") == 1) {
                 var eye = SableBodyProbe.toWorld(level, victim.getEyePosition());
                 var start = center.add(eye.subtract(center).normalize().scale(.8));
                 if (!ModuleTargets.visible(level,heart.creatureId(),start,victim)) continue;
             }
-            return true;
+            if (!chooseBest) return id;
+            best = id;
+            bestRank = rank;
+            bestDistance = distance;
         }
-        return false;
+        return best;
     }
 }

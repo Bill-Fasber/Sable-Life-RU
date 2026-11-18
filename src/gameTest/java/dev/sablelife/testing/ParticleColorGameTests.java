@@ -17,9 +17,11 @@ public final class ParticleColorGameTests {
         var loaded=VirtualModule.load(m.save());var preset=ModulePreset.create(m.save());
         h.assertTrue(loaded.particleEntry("minecraft:effect").color()==0x32CD32&&loaded.particleEntry("minecraft:effect").ticks()==40&&loaded.particleEntry("minecraft:effect").size()==2&&preset.particleEntry("minecraft:effect").color()==0x32CD32,"Color lost through save/preset or life/size edit");
         for(String id:ModuleParticles.BUNDLED) {
-            h.assertTrue(ModuleParticles.valid(id)&&(m.particles().contains(id)||m.editParticle("add",id))&&m.editParticle("color",id,0x123456)&&m.editParticle("duration",id,3)&&m.editParticle("size",id,2),"Bundled particle edits rejected: "+id);
-            var restored=VirtualModule.load(m.save()).particleEntry(id);
-            h.assertTrue(restored.color()==0x123456&&restored.ticks()==60&&restored.size()==2&&ModulePreset.create(m.save()).particleEntry(id).equals(restored),"Bundled style lost in NBT/preset");
+            var bundled=new VirtualModule("particles");
+            h.assertTrue(ModuleParticles.valid(id)&&bundled.editParticle("add",id)&&bundled.editParticle("color",id,0x123456)&&bundled.editParticle("duration",id,3)&&bundled.editParticle("size",id,2),"Bundled particle edits rejected: "+id);
+            var restored=VirtualModule.load(bundled.save()).particleEntry(id);
+            h.assertTrue(restored.color()==0x123456&&restored.ticks()==60&&restored.size()==2&&ModulePreset.create(bundled.save()).particleEntry(id).equals(restored),"Bundled style lost in NBT/preset");
+            h.assertTrue(bundled.editParticle("color",id,-1)&&bundled.particleEntry(id).color()==-1,"Default color could not be restored: "+id);
         }
         h.assertTrue(loaded.particleEntry("minecraft:instant_effect").color()==-1,"Color leaked into another selected particle");
         m.editParticle("add","minecraft:flame");h.assertTrue(!m.editParticle("color","minecraft:flame",0xFF0000)&&!m.editParticle("color","minecraft:effect",0x1000000)&&!m.editParticle("color","minecraft:effect",1.5)&&!m.editParticle("color","minecraft:effect",Double.NaN),"Invalid/unsupported color accepted");

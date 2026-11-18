@@ -1,5 +1,6 @@
 package dev.sablelife.testing;
 import dev.sablelife.client.EffectSelectionScreen;
+import dev.sablelife.client.ColorPickerScreen;
 import dev.sablelife.module.*;
 import net.minecraft.client.*;
 import net.minecraft.client.gui.*;
@@ -18,7 +19,13 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 @EventBusSubscriber(modid="sablelife_tests",value=Dist.CLIENT)
 public final class ParticleColorClientPreview {
     private static int ticks;private static Preview screen;
+    private static java.util.concurrent.CompletableFuture<Void> languageReload;
     private static Object field(Object obj,String name)throws Exception{var f=obj.getClass().getDeclaredField(name);f.setAccessible(true);return f.get(obj);}
+    private static void language(Minecraft mc,String code) {
+        mc.getLanguageManager().setSelected(code);
+        mc.options.languageCode=code;
+        languageReload=mc.reloadResourcePacks();
+    }
     private static void nativeColorCheck()throws Exception{
         var sprites=new net.minecraft.client.particle.SpriteSet(){
             public net.minecraft.client.renderer.texture.TextureAtlasSprite get(int age,int life){return null;}
@@ -31,18 +38,41 @@ public final class ParticleColorClientPreview {
     }
     @SubscribeEvent public static void tick(ClientTickEvent.Post e)throws Exception{
         if(!Boolean.getBoolean("sablelife.particleColorPreview"))return;var mc=Minecraft.getInstance();
-        if(screen==null){if(mc.screen==null||mc.getOverlay()!=null||mc.level!=null)return;nativeColorCheck();mc.options.guiScale().set(2);mc.resizeDisplay();screen=new Preview();mc.setScreen(screen);return;}
-        ticks++;if(ticks==35){mc.options.guiScale().set(3);mc.resizeDisplay();}
+        if(mc.getOverlay()!=null||languageReload!=null&&!languageReload.isDone())return;
+        if(screen==null){if(mc.screen==null||mc.level!=null)return;if(!mc.options.languageCode.equals("en_us")){language(mc,"en_us");return;}nativeColorCheck();mc.options.guiScale().set(2);mc.resizeDisplay();screen=new Preview();mc.setScreen(screen);return;}
+        ticks++;
+        if(ticks==35){mc.options.guiScale().set(3);mc.resizeDisplay();language(mc,"zh_cn");}
+        if(ticks==36)mc.setScreen(new Preview());
+        if(ticks==36)screen=(Preview)mc.screen;
         if(ticks==25||ticks==60){var panel=screen.panel;var color=(Button)field(panel,"color");var life=(EditBox)field(panel,"duration");var size=(EditBox)field(panel,"level");
             if(!color.visible||!color.active||color.getX()+color.getWidth()>life.getX()||life.getX()+life.getWidth()>size.getX()||size.getX()+size.getWidth()>screen.width)throw new IllegalStateException("Color/Life/Size controls overlap or color disabled");
             if(!color.getMessage().getString().contains("32CD32"))throw new IllegalStateException("Saved RGB not displayed");
+            var search=(EditBox)field(panel,"search");
+            var filtered=EffectSelectionScreen.class.getDeclaredMethod("filtered");filtered.setAccessible(true);
+            var name=EffectSelectionScreen.class.getDeclaredMethod("name",String.class);name.setAccessible(true);
+            for(var style:ParticleSpriteStyle.values()){
+                String label=((Component)name.invoke(panel,style.id())).getString();
+                String colorLabel=Component.translatable("particles.sablelife.colorable").getString();
+                if(label.contains("particle.sablelife.")||!label.contains(colorLabel))throw new AssertionError("Missing colorable label: "+label);
+                search.setValue(style.path());
+                if(!((java.util.List<?>)filtered.invoke(panel)).contains(style.id()))throw new AssertionError("Particle not found: "+style.id());
+            }
+            search.setValue("...");
+            if(!((java.util.List<?>)filtered.invoke(panel)).contains(ParticleSpriteStyle.ELLIPSIS.id()))throw new AssertionError("Symbol search did not match ellipsis");
+            color.onPress();
+            if(!(mc.screen instanceof ColorPickerScreen picker)
+                    ||!field(picker,"original").equals(ParticleSpriteStyle.ALERT.color()))
+                throw new AssertionError("The color picker did not use the alert's preset color");
+            mc.setScreen(screen);
+        }
+        if(ticks==27||ticks==62){
             var folder=mc.gameDirectory.toPath().resolve("screenshots");java.nio.file.Files.createDirectories(folder);try(var image=Screenshot.takeScreenshot(mc.getMainRenderTarget())){image.writeToFile(folder.resolve("particle-color-"+ticks+".png"));}
         }
-        if(ticks==80){ParticleTravelClientCheck.run(mc);System.out.println("Particle Color/Life/Size UI passed at GUI scales 2 and 3");mc.stop();}
+        if(ticks==80){ParticleTravelClientCheck.run(mc);System.out.println("Particle selector and color picker passed in English and Simplified Chinese at GUI scales 2 and 3");mc.stop();}
     }
     private static final class Preview extends Screen {
         EffectSelectionScreen panel;Preview(){super(Component.literal("Particle color preview"));}
-        @Override protected void init(){var inv=new Inventory(null);var menu=new EffectSelectionMenu(1,inv);var m=new VirtualModule("particles");for(var id:java.util.List.of("minecraft:effect","minecraft:instant_effect","minecraft:entity_effect","minecraft:dust","minecraft:flame","sablelife:arc","sablelife:smoke","sablelife:energy_mote"))m.editParticle("add",id);for(var id:ModuleParticles.BUNDLED)m.editParticle("add",id);m.editParticle("color","sablelife:arc",0x32CD32);var tag=new CompoundTag();tag.put("Module",m.save());tag.putBoolean("Editable",true);tag.putBoolean("ParticleMode",true);var stack=new ItemStack(Items.PAPER);stack.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(stack);panel=new EffectSelectionScreen(menu,inv,title);try{var selected=EffectSelectionScreen.class.getDeclaredField("rightSelection");selected.setAccessible(true);selected.set(panel,"sablelife:arc");}catch(Exception e){throw new IllegalStateException(e);}panel.init(minecraft,width,height);try{((EditBox)field(panel,"search")).setValue("sable");}catch(Exception e){throw new IllegalStateException(e);}}
+        @Override protected void init(){var inv=new Inventory(null);var menu=new EffectSelectionMenu(1,inv);var m=new VirtualModule("particles");for(var style:ParticleSpriteStyle.values())m.editParticle("add",style.id());m.editParticle("color",ParticleSpriteStyle.ALERT.id(),0x32CD32);var tag=new CompoundTag();tag.put("Module",m.save());tag.putBoolean("Editable",true);tag.putBoolean("ParticleMode",true);var stack=new ItemStack(Items.PAPER);stack.set(DataComponents.CUSTOM_DATA,CustomData.of(tag));menu.getSlot(0).set(stack);panel=new EffectSelectionScreen(menu,inv,title);try{var selected=EffectSelectionScreen.class.getDeclaredField("rightSelection");selected.setAccessible(true);selected.set(panel,ParticleSpriteStyle.ALERT.id());}catch(Exception e){throw new IllegalStateException(e);}panel.init(minecraft,width,height);try{((EditBox)field(panel,"search")).setValue("symbol_");}catch(Exception e){throw new IllegalStateException(e);}}
         @Override public void render(GuiGraphics g,int x,int y,float partial){try{var sync=EffectSelectionScreen.class.getDeclaredMethod("sync");sync.setAccessible(true);sync.invoke(panel);}catch(Exception e){throw new IllegalStateException(e);}panel.render(g,-100,-100,partial);}
     }
 }

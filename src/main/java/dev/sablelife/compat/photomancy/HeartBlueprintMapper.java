@@ -16,6 +16,7 @@ import java.util.UUID;
 public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
     private static final String REF = "sablelife:blueprint_mark";
     private static final String ARENA = "sablelife:blueprint_arena_offset";
+    private static final String CONNECTED_PARTS = "sablelife:blueprint_connected_parts";
     public static void register() {
         SableBlueprintEventRegistry.register(new SableBlueprintEvent(){
             @Override public net.minecraft.resources.ResourceLocation id(){return net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("sablelife","respawn_placement");}
@@ -28,6 +29,14 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
     @Override public CompoundTag save(BlueprintBlockSaveContext context, CompoundTag defaultTag) {
         if (defaultTag == null || !(context.blockEntity() instanceof HeartBlockEntity heart)) return defaultTag;
         var tag = defaultTag.copy();
+        resetRuntime(tag);
+        var references = dev.sablelife.ownership.BlueprintSpawns.references(heart);
+        if (!references.isEmpty()) tag.put(dev.sablelife.ownership.BlueprintSpawns.SAVED_REFERENCES,references);
+        var parts = dev.ryanhcode.sable.api.SubLevelHelper.getConnectedChain(context.subLevel()).stream()
+                .filter(body -> !body.isRemoved())
+                .flatMap(body -> context.subLevelRef(body.getUniqueId()).stream())
+                .mapToInt(BlueprintSubLevelRef::subLevelId).distinct().toArray();
+        tag.putIntArray(CONNECTED_PARTS, parts);
         for (var entry : tag.getCompound("VirtualModules").getList("Modules", 10)) {
             var module = (CompoundTag) entry;
             for (String key : java.util.List.of("Anchors", "ParticleAreaAnchors", "ParticlePointAnchors", "WatchedPart")) {
@@ -44,7 +53,7 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
                 module.remove("ImportSource");
                 if (saved != null) module.put("ImportSource", saved);
             }
-            if (module.contains("ArenaCenter")) {
+            if (module.contains("ArenaCenter") && !module.getString("Type").equals("arena")) {
                 var center = module.getCompound("ArenaCenter");
                 if (center.getString("Dimension").equals(context.level().dimension().location().toString())) {
                     var world = new Vec3(center.getDouble("X"), center.getDouble("Y"), center.getDouble("Z"));
@@ -53,11 +62,30 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
                     relative.putDouble("X", offset.x); relative.putDouble("Y", offset.y); relative.putDouble("Z", offset.z);
                     module.put(ARENA, relative);
                 }
-                module.remove("ArenaCenter");
             }
+            module.remove("ArenaCenter");
         }
-        resetRuntime(tag);
+        mapWirelessFaces(tag, mark -> saveMark(context, heart, mark));
         return tag;
+    }
+
+    private static void mapWirelessFaces(CompoundTag tag, java.util.function.UnaryOperator<CompoundTag> mapper) {
+        var key = dev.sablelife.heart.WirelessChannel.OUTPUT_FACES_TAG;
+        for (var value : tag.getCompound("Wireless").getList("Channels", 10)) {
+            var channel = (CompoundTag)value;
+            if (!channel.contains(key)) continue;
+            var faces = new ListTag();
+            for (var mark : channel.getList(key, 10)) {
+                var mapped = mapper.apply((CompoundTag)mark);
+                if (mapped != null) {
+                    var nameKey = dev.sablelife.heart.WirelessChannel.OUTPUT_FACE_NAME;
+                    if (((CompoundTag)mark).contains(nameKey,8))
+                        mapped.putString(nameKey,((CompoundTag)mark).getString(nameKey));
+                    faces.add(mapped);
+                }
+            }
+            channel.put(key, faces);
+        }
     }
 
     private static CompoundTag saveMark(BlueprintBlockSaveContext context, HeartBlockEntity heart, CompoundTag original) {
@@ -78,7 +106,9 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
 
     @Override public void beforeLoadBlockEntity(BlueprintBlockPlaceContext context, CompoundTag tag) {
         resetRuntime(tag);
+        tag.remove(dev.sablelife.ownership.BlueprintSpawns.SAVED_REFERENCES);
         tag.putUUID("CreatureId", UUID.randomUUID());
+        mapWirelessFaces(tag, mark -> placeMark(context, mark));
         for (var entry : tag.getCompound("VirtualModules").getList("Modules", 10)) {
             var module = (CompoundTag) entry;
             if (module.hasUUID("Id")) module.putUUID("Id", context.allocateMappedUuid(module.getUUID("Id")));
@@ -86,8 +116,10 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
             var hitSettings=module.getCompound("Settings");if(module.getString("Type").equals("hit_counter")&&hitSettings.hasUUID("HitSourceId"))hitSettings.putUUID("HitSourceId",context.allocateMappedUuid(hitSettings.getUUID("HitSourceId")));
             // References must share the placement UUID map with their target modules, even when the target appears later.
             if(hitSettings.hasUUID("SummonAttackId"))hitSettings.putUUID("SummonAttackId",context.allocateMappedUuid(hitSettings.getUUID("SummonAttackId")));
+            if (hitSettings.hasUUID("FacingSensorId")) hitSettings.putUUID("FacingSensorId", context.allocateMappedUuid(hitSettings.getUUID("FacingSensorId")));
             if(hitSettings.hasUUID("ImpactFieldId"))hitSettings.putUUID("ImpactFieldId",context.allocateMappedUuid(hitSettings.getUUID("ImpactFieldId")));
-            if (module.getString("Type").equals("command")) module.putBoolean("CommandApprovalRequired", true);
+            if (dev.sablelife.module.AuthoringLimits.requiresOperator(module.getString("Type")))
+                module.putBoolean("CommandApprovalRequired", true);
             for (var moveValue : module.getList("Moves", 10)) {
                 var move = (CompoundTag)moveValue;
                 var config = move.getCompound("Config");
@@ -131,16 +163,27 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
 
     @Override public void afterLoadBlockEntity(BlueprintBlockPlaceContext context, BlockEntity entity, CompoundTag loadedTag) {
         if (!(entity instanceof HeartBlockEntity heart)) return;
+        // Synaxis can publish its connections several ticks after Photomancy places the bodies.
+        heart.blueprintPlaced();
+        for (int id : loadedTag.getIntArray(CONNECTED_PARTS)) {
+            var body = context.session().placedSubLevel(id);
+            if (body != null) heart.expectBlueprintConnection(body.getUniqueId());
+        }
         var modules = loadedTag.getCompound("VirtualModules").getList("Modules", 10).copy();
         context.deferAfterBlockEntities(() -> {
             for (var entry : modules) {
                 var tag = (CompoundTag) entry;
                 if (!tag.contains(ARENA) || !tag.hasUUID("Id")) continue;
                 var module = heart.modules().find(tag.getUUID("Id"));
-                if (module == null || !java.util.List.of("arena","blueprint_spawn").contains(module.type())) continue;
+                if (module == null || !module.supportsFixedPoint() || module.type().equals("arena")) continue;
                 var offset = tag.getCompound(ARENA);
                 var local = context.storagePos().getCenter().add(offset.getDouble("X"), offset.getDouble("Y"), offset.getDouble("Z"));
-                module.arenaCenter(context.subLevel().logicalPose().transformPosition(local), context.level().dimension().location().toString());
+                if (module.type().equals("linear_movement")) {
+                    // Photomancy finalizes the body's center of mass and pose after the block entity hooks.
+                    heart.deferBlueprintWaypoint(module.id(), local);
+                } else {
+                    module.arenaCenter(context.subLevel().logicalPose().transformPosition(local), context.level().dimension().location().toString());
+                }
             }
             if (heart.getBlockState().getValue(HeartBlock.ACTIVE))
                 context.level().setBlock(heart.getBlockPos(), heart.getBlockState().setValue(HeartBlock.ACTIVE, false), 3);
@@ -149,10 +192,12 @@ public final class HeartBlueprintMapper implements SableBlueprintBlockMapper {
     }
 
     private static void resetRuntime(CompoundTag tag) {
+        tag.remove("PendingBlueprintActivation");
         tag.remove("BoundBody"); tag.remove("CombatMusicHits");
         tag.remove(HeartBlockEntity.REMOTE_ID_TAG);
         boolean survival=tag.contains("SurvivalTokens",4);
         if(survival)tag.putLong("SurvivalTokens",0);
+        dev.sablelife.heart.SurvivalFuel.clearBlueprintContents(tag);
         tag.putString("LifeState", "DORMANT"); tag.putFloat("Health", survival?0:tag.getFloat("MaxHealth"));
         tag.putInt("RemainingDeathTicks", 0);
         tag.getCompound("Wireless").putLong("Elapsed", 0);

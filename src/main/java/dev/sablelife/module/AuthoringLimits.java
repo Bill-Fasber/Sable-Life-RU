@@ -7,6 +7,7 @@ import java.util.ArrayDeque;
 /** Bounds untrusted authoring input before recursive parsing or copying. World saves use their own codec. */
 public final class AuthoringLimits {
     public static final int MAX_DEPTH = 64, MAX_NODES = 8192, MAX_PRESET_BYTES = 65536;
+    public static final int MAX_CONFIGURATION_BYTES = 8 * 1024 * 1024;
     private record Node(Tag tag, int depth) {}
 
     public static boolean presetText(String text) {
@@ -55,6 +56,21 @@ public final class AuthoringLimits {
         return true;
     }
 
+    public static boolean requiresOperator(String type) {
+        return type.equals("command") || type.equals("message_display");
+    }
+
+    public static boolean containsOperatorModules(CompoundTag configuration) {
+        return containsOperatorModules(configuration, false);
+    }
+
+    public static boolean containsOperatorModules(CompoundTag configuration, boolean allowLocalMessages) {
+        for (var value : configuration.getList("Modules", 10)) {
+            String type = ((CompoundTag)value).getString("Type");
+            if (requiresOperator(type) && !(allowLocalMessages && type.equals("message_display"))) return true;
+        }
+        return false;
+    }
     public static boolean containsCommands(CompoundTag configuration) {
         for (var value : configuration.getList("Modules", 10))
             if (((CompoundTag)value).getString("Type").equals("command")) return true;

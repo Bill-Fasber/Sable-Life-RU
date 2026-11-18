@@ -42,6 +42,8 @@
     "FreezeMovementMixin"
   ],
   "client": [
+    "CommandWandEntityRendererMixin",
+    "CommandWandOutlineMixin",
     "RespawnLabelRendererMixin",
     "ProtectedBodyMiningMixin",
     "ParticleTravelMixin",

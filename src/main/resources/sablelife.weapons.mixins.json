@@ -7,6 +7,7 @@
   "mixins": [
     "CannonMountCleanupMixin",
     "TaczBodyDamageMixin",
+    "TaczBreachingDamageMixin",
     "TaczBlockRayTraceMixin",
     "CannonBodyDamageMixin",
     "TaczBlastProfileMixin",

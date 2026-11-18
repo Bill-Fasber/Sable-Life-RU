@@ -63,6 +63,96 @@ public final class GyroscopeGameTests {
   h.runAfterDelay(13,()->{h.assertTrue(state(c,m).getString("GyroState").equals("idle"),"Master Off kept gyro active");m.edit("gyroTilt",0,"");c.wireless().master(true);});
   h.runAfterDelay(23,()->{h.assertTrue(ModuleGyroscope.tilt(ModuleGyroscope.down(c,m))<1,"Full-level recovery stopped at threshold");c.forceDeath();c.modules().tick(c);h.assertTrue(state(c,m).getString("GyroState").equals("idle"),"Death kept gyro correcting");h.succeed();});
  }
+ @GameTest(template="combat", batch="gyro_combined_recovery", timeoutTicks=45)
+ public static void DirectionalTurnAndGyroscopeRecoverTogether(GameTestHelper h) {
+  checkCombinedRecovery(h, false, false);
+ }
+
+ @GameTest(template="combat", batch="gyro_combined_recovery", timeoutTicks=45)
+ public static void RandomTurnAndGyroscopeRecoverTogether(GameTestHelper h) {
+  checkCombinedRecovery(h, true, false);
+ }
+
+ @GameTest(template="combat", batch="gyro_combined_obstruction", timeoutTicks=45)
+ public static void BlockedCombinedTurnLeavesGyroscopeRecovery(GameTestHelper h) {
+  checkCombinedRecovery(h, false, true);
+ }
+
+ private static void checkCombinedRecovery(GameTestHelper h, boolean random, boolean obstructed) {
+  var core = fixture(h, false);
+  var gyro = gyro(core);
+  h.assertTrue(ModuleGyroscope.calibrate(core, gyro), "Calibration failed");
+  gyro.edit("gyroSpeed", 40, "");
+  if (obstructed) gyro.edit("gyroCollision", 0, "");
+  gyro.edit("enabled", 0, "");
+  var turn = core.modules().add("signal_turn");
+  turn.anchors(gyro.anchors());
+  var player = TestActors.creative(h.getLevel());
+  player.setPos(SableBodyProbe.toWorld(h.getLevel(), core.getBlockPos().getCenter()));
+  var dashboard = new HeartDashboardMenu(2, player.getInventory(), core);
+  var legacy = turn.save();
+  legacy.getCompound("Settings").remove("turnWithGyro");
+  h.assertTrue(VirtualModule.load(legacy).value("turnWithGyro") == 0, "Old settings did not default to Off");
+  var packet = new ModuleNetworking.Action(dashboard.containerId, core.modules().revision(), turn.id(), "edit", "turnWithGyro", 1, "");
+  var buffer = new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), h.getLevel().registryAccess());
+  try {
+   ModuleNetworking.Action.CODEC.encode(buffer, packet);
+   var decoded = ModuleNetworking.Action.CODEC.decode(buffer);
+   h.assertTrue(decoded.equals(packet) && dashboard.action(player, decoded.revision(), decoded.module(), decoded.operation(),
+           decoded.key(), decoded.value(), decoded.text()), "Dashboard rejected the new setting");
+  } finally {
+   buffer.release();
+  }
+  int channel = random ? -1 : core.wireless().add();
+  if (random) {
+   turn.edit("turnMode", 1, "");
+   turn.edit("turnMinYaw", 24, "");
+   turn.edit("turnMaxYaw", 24, "");
+  } else {
+   core.wireless().channel(channel).set(0, 1);
+   core.wireless().channel(channel).set(6, 3);
+   turn.edit("turnLeftChannel", channel + 1, "");
+  }
+  h.assertTrue(VirtualModule.load(turn.save()).value("turnWithGyro") == 1, "Enabled setting was lost on reload");
+  turn.edit("enabled", 0, "");
+  core.tryActivate(player);
+  orient(core, new Quaterniond().rotateZ(Math.toRadians(40)));
+  double[] startingTilt = {0};
+  h.runAfterDelay(3, () -> {
+   startingTilt[0] = ModuleGyroscope.tilt(ModuleGyroscope.down(core, gyro));
+   h.assertTrue(startingTilt[0] > 35, "Structure did not start tilted");
+   if (obstructed) {
+    var center = BlockPos.containing(SableBodyProbe.toWorld(h.getLevel(), core.getBlockPos().getCenter()));
+    for (var p : BlockPos.betweenClosed(center.offset(-1, -2, -2), center.offset(-1, 2, 0)))
+     h.getLevel().setBlockAndUpdate(p, Blocks.STONE.defaultBlockState());
+   }
+   if (!random) core.wireless().programOutputs("gyro_combined_test", Map.of(channel, 15));
+   turn.edit("enabled", 1, "");
+   gyro.edit("enabled", 1, "");
+  });
+  h.runAfterDelay(5, () -> {
+   if (obstructed) {
+    h.assertTrue(state(core, turn).getString("TurnState").equals("blocked")
+            && state(core, gyro).getString("GyroState").equals("recovering"),
+            "Gyroscope should apply its own recovery when the combined turn is blocked: " + state(core, turn).getString("TurnState"));
+    return;
+   }
+   var rotation = new Quaterniond(turn.anchors().getFirst().body(core).logicalPose().orientation());
+   var heading = ContactBox.rotate(rotation, new Vec3(0, 0, 1));
+   h.assertTrue(state(core, gyro).getString("GyroState").equals("recovering")
+           && state(core, turn).getString("TurnState").equals(random ? "random_turning" : "turning"),
+           "Both controllers should report active motion: " + state(core, turn).getString("TurnState"));
+   h.assertTrue(Math.abs(heading.x) > .05 && ModuleGyroscope.tilt(ModuleGyroscope.down(core, gyro)) < startingTilt[0] - 1,
+           "The same ticks must both change heading and reduce tilt");
+  });
+  h.runAfterDelay(10, () -> {
+   if (random) h.assertTrue(state(core, turn).getString("TurnState").equals("random_done"),
+           "The random turn did not finish during recovery");
+   core.resetForCreative(player);
+   h.succeed();
+  });
+ }
+
  @GameTest(template="combat",batch="gyro_collision_budget")
  public static void CollisionBudgetAndMovementOwnershipPauseWithoutErasingCalibration(GameTestHelper h){var c=fixture(h,false);var m=gyro(c);m.gyroDown(ContactBox.rotate(new Quaterniond().rotateZ(Math.toRadians(40)),ModuleGyroscope.DOWN));m.edit("gyroSpeed",720,"");c.tryActivate(TestActors.creative(h.getLevel()));var pos=BlockPos.containing(SableBodyProbe.toWorld(h.getLevel(),c.getBlockPos().getCenter()));for(var p:BlockPos.betweenClosed(pos.offset(-2,-1,-2),pos.offset(2,-1,2)))h.getLevel().setBlockAndUpdate(p,Blocks.STONE.defaultBlockState());var runtime=new ModuleGyroscope();h.assertTrue(runtime.tick(c,false)&&runtime.state(m.id()).equals("blocked"),"Gyro rotated through floor");runtime.clear();h.assertTrue(!runtime.tick(c,true)&&runtime.state(m.id()).equals("busy")&&m.gyroDown()!=null,"Linear movement did not retain priority/calibration");runtime.clear();var budget=CollisionWorkBudget.begin(h.getLevel());for(int step=1<<30;step>0;step>>=1)while(budget.spend(step)){}h.assertTrue(runtime.tick(c,false)&&runtime.state(m.id()).equals("budget"),"Exhausted sweep forced rotation");budget.refund(dev.sablelife.SableLifeServerConfig.collisionChecksPerTick());c.resetForCreative(TestActors.creative(h.getLevel()));h.succeed();}
  @GameTest(template="combat",batch="gyro_axes")

@@ -75,6 +75,133 @@ public final class CoreReleaseGameTests {
         h.succeed();
     }
 
+    @GameTest(template="combat",batch="survival_automatic_refuel",timeoutTicks=100)
+    public static void SurvivalHopperRefuelsThroughSharedSlotsOnAssembledBody(GameTestHelper h){
+        var level=h.getLevel();
+        var pos=h.absolutePos(new BlockPos(3,8,3));
+        var hopperPos=pos.east();
+        var coreBlock=SableLife.SURVIVAL_LIFE_CORE.get();
+        level.setBlockAndUpdate(pos,coreBlock.defaultBlockState());
+        level.setBlockAndUpdate(hopperPos,Blocks.HOPPER.defaultBlockState()
+                .setValue(net.minecraft.world.level.block.HopperBlock.FACING,Direction.WEST));
+        var core=(HeartBlockEntity)level.getBlockEntity(pos);
+        var hopper=(net.minecraft.world.level.block.entity.HopperBlockEntity)level.getBlockEntity(hopperPos);
+        var player=TestActors.creative(level);
+        player.setPos(net.minecraft.world.phys.Vec3.atCenterOf(pos));
+        player.setGameMode(GameType.SURVIVAL);
+        var menu=new SurvivalTopUpMenu(1,player.getInventory(),core);
+        var copper=net.minecraft.world.item.Items.COPPER_INGOT;
+        var fuel=new net.minecraft.world.item.ItemStack(copper,3);
+        var input=level.getCapability(net.neoforged.neoforge.capabilities.Capabilities.ItemHandler.BLOCK,pos,Direction.EAST);
+        h.assertTrue(input!=null&&input.insertItem(0,fuel,true).isEmpty()&&menu.getSlot(0).getItem().isEmpty(),
+                "Pipe simulation mutated the fuel slots");
+        h.assertTrue(input.insertItem(0,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.COBBLESTONE),false)
+                .is(net.minecraft.world.item.Items.COBBLESTONE),"Pipe accepted unsupported fuel");
+        hopper.setItem(0,fuel);
+        h.runAfterDelay(12,()->{
+            h.assertTrue(menu.getSlot(0).getItem().is(copper)&&core.survivalTokenBalance()==0,
+                    "Hopper did not stock the shared Refuel slots before automatic settlement");
+            h.assertTrue(input.extractItem(0,1,false).isEmpty(),"A pipe extracted stored fuel");
+            player.setGameMode(GameType.SPECTATOR);
+            h.assertTrue(!menu.clickMenuButton(player,SurvivalTopUpMenu.ENABLE_AUTO),"Spectator enabled automatic refuel");
+            player.setGameMode(GameType.SURVIVAL);
+            h.assertTrue(!menu.clickMenuButton(player,255),"Unknown container button was accepted");
+            menu.removed(player);
+            var body=SubLevelAssemblyHelper.assembleBlocks(level,pos,List.of(pos,hopperPos),
+                    new BoundingBox3i(pos.getX(),pos.getY(),pos.getZ(),hopperPos.getX(),pos.getY(),pos.getZ()));
+            var moved=(HeartBlockEntity)level.getBlockEntity(body.getPlot().getCenterBlock());
+            player.setPos(ModuleArena.corePosition(moved));
+            var reopened=new SurvivalTopUpMenu(2,player.getInventory(),moved);
+            h.assertTrue(reopened.getSlot(0).getItem().is(copper)&&!reopened.snapshot().getBoolean("Automatic"),
+                    "Assembly or reopening the menu lost the fuel or changed its default");
+            h.assertTrue(reopened.clickMenuButton(player,SurvivalTopUpMenu.ENABLE_AUTO)
+                    &&reopened.clickMenuButton(player,SurvivalTopUpMenu.ENABLE_AUTO)
+                    &&reopened.snapshot().getBoolean("Automatic"),"Repeated enable toggled or rejected automatic refuel");
+            h.runAfterDelay(34,()->{
+                h.assertTrue(moved.survivalTokenBalance()==30&&reopened.getSlot(0).getItem().isEmpty(),
+                        "Assembled hopper or automatic settlement lost or duplicated fuel: "+moved.survivalTokenBalance());
+                var saved=moved.saveWithoutMetadata(level.registryAccess());
+                moved.loadWithComponents(saved,level.registryAccess());
+                h.assertTrue(new SurvivalTopUpMenu(3,player.getInventory(),moved).snapshot().getBoolean("Automatic"),
+                        "Automatic refuel setting did not survive saving");
+                moved.configure(20,0);
+                moved.tryActivate(player);
+                h.assertTrue(moved.health().state()==HeartState.ALIVE&&moved.survivalTokenBalance()==10,
+                        "Could not activate the refueled body with the expected balance");
+                var movedHopper=(net.minecraft.world.level.block.entity.HopperBlockEntity)level.getBlockEntity(moved.getBlockPos().east());
+                movedHopper.setItem(0,new net.minecraft.world.item.ItemStack(copper));
+                h.runAfterDelay(24,()->{
+                    h.assertTrue(moved.survivalTokenBalance()==20,"Hopper did not refuel the active body");
+                    h.succeed();
+                });
+            });
+        });
+    }
+
+    @GameTest(template="combat",batch="survival_create_chute",timeoutTicks=80)
+    public static void CreateChuteCanFeedTheRefuelSlots(GameTestHelper h){
+        var level=h.getLevel();
+        var pos=h.absolutePos(new BlockPos(3,8,3));
+        level.setBlockAndUpdate(pos,SableLife.SURVIVAL_LIFE_CORE.get().defaultBlockState());
+        level.setBlockAndUpdate(pos.above(),com.simibubi.create.AllBlocks.CHUTE.getDefaultState());
+        var chute=(com.simibubi.create.content.logistics.chute.ChuteBlockEntity)level.getBlockEntity(pos.above());
+        chute.setItem(new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.COPPER_INGOT,4));
+        h.succeedWhen(()->{
+            var core=(HeartBlockEntity)level.getBlockEntity(pos);
+            var data=core.saveWithoutMetadata(level.registryAccess()).getCompound("SurvivalRefuel");
+            h.assertTrue(chute.getItem().isEmpty()&&data.getList("Items",10).size()==1
+                    &&core.survivalTokenBalance()==0,"Create chute did not store the fuel in the core");
+        });
+    }
+
+    @GameTest(template="combat",batch="survival_fuel_mining")
+    public static void SurvivalMiningRetainsFuelWithoutAnEnergyBalance(GameTestHelper h){
+        var level=h.getLevel();
+        var pos=h.absolutePos(new BlockPos(3,8,3));
+        var block=SableLife.SURVIVAL_LIFE_CORE.get();
+        level.setBlockAndUpdate(pos,block.defaultBlockState());
+        var core=(HeartBlockEntity)level.getBlockEntity(pos);
+        var player=TestActors.creative(level);
+        player.setPos(net.minecraft.world.phys.Vec3.atCenterOf(pos));
+        player.setGameMode(GameType.SURVIVAL);
+        var old=core.saveWithoutMetadata(level.registryAccess());
+        old.putLong("SurvivalTokens",5);
+        core.loadWithComponents(old,level.registryAccess());
+        var menu=new SurvivalTopUpMenu(1,player.getInventory(),core);
+        h.assertTrue(core.survivalTokenBalance()==5&&core.spendAttackTokens(5)&&menu.getSlot(4).getItem().isEmpty()
+                &&!menu.snapshot().getBoolean("Automatic"),"A legacy core's balance or refuel defaults changed");
+        var copper=net.minecraft.world.item.Items.COPPER_INGOT;
+        menu.getSlot(4).set(new net.minecraft.world.item.ItemStack(copper,4));
+        core.loadWithComponents(core.saveWithoutMetadata(level.registryAccess()),level.registryAccess());
+        h.assertTrue(menu.getSlot(4).getItem().getCount()==4,"Saving changed the fuel stack or slot");
+        player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,
+                new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.DIAMOND_PICKAXE));
+        h.assertTrue(player.gameMode.destroyBlock(pos),"Survival mining could not break a dormant core");
+        var drops=level.getEntitiesOfClass(net.minecraft.world.entity.item.ItemEntity.class,
+                new net.minecraft.world.phys.AABB(pos).inflate(2),
+                item->item.getItem().is(SableLife.SURVIVAL_LIFE_CORE_ITEM.get()));
+        h.assertTrue(drops.size()==1,"Mining did not produce one Survival Heart Core");
+        var stack=drops.getFirst().getItem();
+        player.setItemInHand(net.minecraft.world.InteractionHand.MAIN_HAND,stack.copy());
+        var hit=new net.minecraft.world.phys.BlockHitResult(net.minecraft.world.phys.Vec3.atCenterOf(pos),Direction.UP,pos,false);
+        var place=new net.minecraft.world.item.context.BlockPlaceContext(player,net.minecraft.world.InteractionHand.MAIN_HAND,
+                player.getMainHandItem(),hit);
+        h.assertTrue(player.getMainHandItem().getItem() instanceof net.minecraft.world.item.BlockItem item
+                &&item.place(place).consumesAction(),"Mining drop could not be placed");
+        var duplicatePos=pos.east();
+        level.setBlockAndUpdate(duplicatePos,block.defaultBlockState());
+        block.setPlacedBy(level,duplicatePos,block.defaultBlockState(),player,stack.copy());
+        h.runAfterDelay(3,()->{
+            var restored=(HeartBlockEntity)level.getBlockEntity(pos);
+            var duplicate=(HeartBlockEntity)level.getBlockEntity(duplicatePos);
+            h.assertTrue(new SurvivalTopUpMenu(2,player.getInventory(),restored).getSlot(4).getItem().getCount()==4,
+                    "Placed core did not restore its fuel");
+            h.assertTrue(new SurvivalTopUpMenu(3,player.getInventory(),duplicate).getSlot(4).getItem().isEmpty(),
+                    "A copied core item redeemed the same fuel twice");
+            h.succeed();
+        });
+    }
+
     @GameTest(template="combat",batch="survival_release_shears")
     public static void SurvivalShearsReleaseOnlySurvivalCoresAndRetainLifeAndEnergy(GameTestHelper h){
         var core=fixture(h,SableLife.SURVIVAL_LIFE_CORE.get());
@@ -281,11 +408,17 @@ public final class CoreReleaseGameTests {
         var row=module.armorRules().add();row.edit("when",1);var menu=new ArmorRuleMenu(2,player.getInventory(),core,module,row.id());
         h.assertTrue(menu.snapshot().getDouble("MinimumModifier")==-90&&!menu.action(player,core.modules().revision(),row.id(),"modifier",-91),"Survival menu accepted more than 90 percent reduction");
         h.assertTrue(menu.action(player,core.modules().revision(),row.id(),"modifier",-90),"Survival menu rejected 90 percent reduction");
-        row.edit("modifier",-100);SurvivalLifeCorePolicy.constrain(module);h.assertTrue(row.modifier()==-90,"Old immunity rules were not clamped");
+        h.assertTrue(menu.action(player,core.modules().revision(),row.id(),"projectileOverride",1)
+                && !menu.action(player,core.modules().revision(),row.id(),"projectileModifier",-91),"Survival projectile override ignored cap");
+        row.edit("modifier",-100);row.edit("projectileModifier",-100);SurvivalLifeCorePolicy.constrain(module);
+        h.assertTrue(row.modifier()==-90&&row.modifier(ArmorRules.HitType.PROJECTILE)==-90,"Imported immunity rules were not clamped");
+        row.edit("modifier",-20);row.edit("meleeOverride",1);row.edit("meleeModifier",-50);
         var quote=new net.minecraft.nbt.CompoundTag();SurvivalTokens.writeEstimate(core,module,quote);h.assertTrue(quote.getDouble("TokenEstimatePerSecond")==90,"90 percent quote was not 90/s");
         core.depositSurvivalTokens(player,new net.minecraft.world.item.ItemStack(net.minecraft.world.item.Items.COPPER_INGOT,30));core.tryActivate(player);
         h.assertTrue(core.survivalTokenBalance()==200,"Armor starting funds incorrect");core.modules().armorBilling.tick(core);
-        h.assertTrue(ModuleArmor.damage(core,core.getBlockPos().east(),20)==2,"Runtime exceeded survival reduction cap");
+        h.assertTrue(ModuleArmor.damage(core,core.getBlockPos().east(),20)==16
+                && ModuleArmor.damage(core,core.getBlockPos().east(),20,ArmorRules.HitType.MELEE)==10
+                && ModuleArmor.damage(core,core.getBlockPos().east(),20,true)==2,"Survival modifiers used a different hit type or exceeded the cap");
         h.runAfterDelay(20,()->{h.assertTrue(core.survivalTokenBalance()==110,"Twenty armor ticks did not cost exactly 90 Energy: "+core.survivalTokenBalance());module.edit("enabled",0,"");h.succeed();});
     }
 

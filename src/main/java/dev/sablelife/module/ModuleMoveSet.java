@@ -7,17 +7,19 @@ import java.util.*;
 /** Move set owns conditions, weighted/priority selection and direct action timing. */
 public final class ModuleMoveSet {
     private static final class State {
-        UUID current, previous;
+        UUID current, previous, target;
         long started, restUntil;
         int revision;
         final Map<UUID, Long> cooldown = new HashMap<>();
     }
+    private record Activation(long started, UUID target) {}
+
     private final Map<UUID, State> states = new HashMap<>();
-    private final Map<UUID,Long> activations=new HashMap<>();
-    public long activation(UUID id){return activations.getOrDefault(id,Long.MIN_VALUE);}
-    private final Set<UUID> active = new HashSet<>();
-    public boolean powered(UUID id) { return active.contains(id); }
-    public void clear() { states.clear(); active.clear();activations.clear(); }
+    private final Map<UUID, Activation> activations = new HashMap<>();
+    public long activation(UUID id) { var action = activations.get(id); return action == null ? Long.MIN_VALUE : action.started(); }
+    public UUID target(UUID id) { var action = activations.get(id); return action == null ? null : action.target(); }
+    public boolean powered(UUID id) { return activations.containsKey(id); }
+    public void clear() { states.clear(); activations.clear(); }
     public static String status(MoveSet.Move move, HeartBlockEntity heart) {
         if (!move.config().enabled()) return "disabled";
         if (move.actions().isEmpty()) return "empty";
@@ -30,7 +32,7 @@ public final class ModuleMoveSet {
         return "ready";
     }
     public void tick(HeartBlockEntity heart) {
-        active.clear();activations.clear();
+        activations.clear();
         if (!heart.operational() || !heart.wireless().master()) { clear(); return; }
         long now = heart.getLevel().getGameTime(); var keep = new HashSet<UUID>();
         for (var table : heart.modules().all()) {
@@ -41,21 +43,42 @@ public final class ModuleMoveSet {
             var running = moves.stream().filter(m -> m.config().id().equals(state.current)).findFirst().orElse(null);
             if (state.current != null && (running == null || !status(running, heart).equals("ready") || state.revision != heart.modules().revision()
                     || now - state.started >= Math.max(running.length(), (int)running.config().value("dispatchBusy")))) {
+                state.target = null;
                 if(ModuleHurt.once(table)) { heart.modules().hurtTriggers.finish(table.id()); state.current=null; continue; }
                 state.current = null; state.restUntil = now + (running == null ? 1 : (int)running.config().value("dispatchRest")); running = null;
             }
             if (state.current == null && now >= state.restUntil) {
-                var eligible = moves.stream().filter(m -> status(m, heart).equals("ready") && now >= state.cooldown.getOrDefault(m.config().id(), 0L)
-                        && (ignoresConditions(table, heart.isControlCore())||m.config().targetPresent(heart))).toList();
+                boolean ignore = ignoresConditions(table, heart.isControlCore());
+                var eligible = new ArrayList<MoveSet.Move>();
+                var selectedTargets = new HashMap<UUID, UUID>();
+                for (var move : moves) {
+                    var rules = move.config();
+                    if (now < state.cooldown.getOrDefault(rules.id(), 0L) || !status(move, heart).equals("ready")) continue;
+                    if (!ignore) {
+                        if (rules.value("inheritMoveTarget") == 1) {
+                            UUID target = rules.selectTarget(heart);
+                            if (target == null) continue;
+                            selectedTargets.put(rules.id(), target);
+                        } else if (!rules.targetPresent(heart)) continue;
+                    }
+                    eligible.add(move);
+                }
                 var selected = choose(eligible, state.previous, heart.getLevel().random.nextDouble());
                 if (selected != null) {
                     running = eligible.stream().filter(m -> m.config().id().equals(selected)).findFirst().orElseThrow();
                     state.current = state.previous = selected; state.started = now; state.revision = heart.modules().revision();
+                    state.target = selectedTargets.get(selected);
                     state.cooldown.put(selected, now + (int)running.config().value("dispatchCooldown"));
                 }
             }
             if(running==null && ModuleHurt.once(table)) heart.modules().hurtTriggers.finish(table.id());
-            if (running != null) for (var a : running.actions()) if (a.active(now - state.started)){active.add(a.module());activations.merge(a.module(),state.started+a.start(),Math::max);}
+            if (running != null) for (var a : running.actions()) {
+                if (!a.active(now - state.started)) continue;
+                long started = state.started + a.start();
+                var previous = activations.get(a.module());
+                // Equal starts keep the first action in the core's module order.
+                if (previous == null || started > previous.started()) activations.put(a.module(), new Activation(started, state.target));
+            }
         }
         states.keySet().retainAll(keep);
     }

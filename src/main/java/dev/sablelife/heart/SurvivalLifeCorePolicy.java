@@ -40,8 +40,7 @@ public final class SurvivalLifeCorePolicy {
 
     public static void constrain(VirtualModule module){
         if(module.type().equals("armor"))for(var row:module.armorRules().rows())
-            if(row.modifier() < -dev.sablelife.module.ModuleArmor.SURVIVAL_MAX_REDUCTION)
-                row.edit("modifier",-dev.sablelife.module.ModuleArmor.SURVIVAL_MAX_REDUCTION);
+            row.clampMinimum(-dev.sablelife.module.ModuleArmor.SURVIVAL_MAX_REDUCTION);
         for(var key:List.of("releasePosition","quakeOrigin","strikeMode"))
             if(!targetModeAllowed(module,key,module.value(key)))module.edit(key,0,"");
     }

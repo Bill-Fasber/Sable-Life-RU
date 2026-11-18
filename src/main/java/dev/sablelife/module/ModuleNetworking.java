@@ -67,6 +67,8 @@ public final class ModuleNetworking {
             return switch (operation) {
                 case "add_preset" -> ModulePreset.MAX_TEXT;
                 case "commands" -> CommandProgram.MAX_TEXT + 8;
+                case "msg_row" -> MessageProgram.MAX_TEXT;
+                case "edit" -> ModuleFields.arenaText(key) ? ModuleFields.ARENA_ANNOUNCEMENT_LENGTH : 80;
                 case "sound_timeline" -> 256;
                 case "wild_encounter" -> key.equals("conditions") || key.endsWith("_rule") ? 16000 : 80;
                 case GROUP_BATCH, GROUP_MEMBERS -> GROUP_BATCH_TEXT_LIMIT;
@@ -115,9 +117,17 @@ public final class ModuleNetworking {
     }
     public static void register(RegisterPayloadHandlersEvent event) {
         var registrar = event.registrar("50");
+        registrar.optional().playToServer(dev.sablelife.item.CommandWandItem.Input.TYPE,
+                dev.sablelife.item.CommandWandItem.Input.CODEC, (packet, context) -> {
+                    if (context.player() instanceof net.minecraft.server.level.ServerPlayer player) {
+                        dev.sablelife.item.CommandWandItem.handle(player, packet);
+                    }
+                });
         registrar.playToClient(DatapackModuleCatalog.TYPE, DatapackModuleCatalog.CODEC,
                 (packet, context) -> DatapackModules.receive(packet));
         registrar.playToClient(MovementPreview.TYPE,MovementPreview.CODEC,(packet,ctx)->dev.sablelife.client.MovementPreviewClient.receive(packet));
+        registrar.optional().playToClient(InspectionSnapshot.TYPE, InspectionSnapshot.CODEC,
+                (packet, ctx) -> dev.sablelife.client.InspectionClient.receive(packet));
         registrar.playToClient(LaserVisual.TYPE,LaserVisual.CODEC,(packet,ctx)->dev.sablelife.client.LaserVisualClient.receive(packet));
         registrar.playToClient(ProjectileTracer.Segment.TYPE, ProjectileTracer.Segment.CODEC,
                 (packet, ctx) -> dev.sablelife.client.ProjectileTracerClient.receive(packet));
@@ -130,6 +140,8 @@ public final class ModuleNetworking {
             if (p.operation.equals("clear_mark")) { MarkingSessions.clearMarks(ctx.player()); return; }
             if (ctx.player().containerMenu instanceof HeartDashboardMenu menu && menu.containerId == p.container)
                 menu.action(ctx.player(), p.revision, p.module, p.operation, p.key, p.value, p.text);
+            else if (ctx.player().containerMenu instanceof dev.sablelife.heart.HeartWirelessMenu menu && menu.containerId == p.container && p.operation.equals("wire_face"))
+                menu.outputAction(ctx.player(),p.revision,p.key,p.value,p.text);
             else if (ctx.player().containerMenu instanceof dev.sablelife.heart.HeartWirelessMenu menu && menu.containerId == p.container && p.operation.equals("wireless_name"))
                 menu.rename(ctx.player(), p.value, p.text);
             else if (ctx.player().containerMenu instanceof EffectSelectionMenu menu && menu.containerId == p.container && p.operation.equals("effect"))

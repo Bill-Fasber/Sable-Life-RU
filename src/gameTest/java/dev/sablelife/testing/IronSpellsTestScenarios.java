@@ -10,8 +10,10 @@ import io.redspace.ironsspellbooks.entity.spells.AbstractMagicProjectile;
 import io.redspace.ironsspellbooks.entity.spells.magic_missile.MagicMissileProjectile;
 import io.redspace.ironsspellbooks.entity.spells.magic_arrow.MagicArrowProjectile;
 import io.redspace.ironsspellbooks.entity.spells.fire_arrow.FireArrowProjectile;
+import io.redspace.ironsspellbooks.entity.spells.fire_breath.FireBreathProjectile;
 import io.redspace.ironsspellbooks.entity.spells.fireball.*;
 import io.redspace.ironsspellbooks.config.ServerConfigs;
+import io.redspace.ironsspellbooks.api.events.SpellDamageEvent;
 import io.redspace.ironsspellbooks.spells.lightning.ShockwaveSpell;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.magic.MagicData;
@@ -27,9 +29,21 @@ public final class IronSpellsTestScenarios {
  private static HeartBlockEntity core(GameTestHelper h){return core(h,0);}
  private static HeartBlockEntity core(GameTestHelper h,int offset){var level=h.getLevel();var p=h.absolutePos(new BlockPos(5,40,5+offset));var blocks=List.of(p,p.east(),p.east(2));for(var b:blocks)level.setBlockAndUpdate(b,b.equals(p)?SableLife.HEART.get().defaultBlockState():Blocks.IRON_BLOCK.defaultBlockState());var body=SubLevelAssemblyHelper.assembleBlocks(level,p,blocks,new BoundingBox3i(p.getX(),p.getY(),p.getZ(),p.getX()+2,p.getY(),p.getZ()));var c=(HeartBlockEntity)level.getBlockEntity(body.getPlot().getCenterBlock());c.configure(1000,60);c.tryActivate(TestActors.creative(level));return c;}
  public static void hybridProjectile(GameTestHelper h,int kind){
-  var c=core(h);var m=c.modules().add("entity_hitbox");m.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos().east(2),Direction.EAST)));m.edit("hitboxDamageMode",1,"");m.edit("hitboxWidth",2,"");c.modules().damageBoxes.tick(c);
-  if(kind==5){var armor=c.modules().add("armor");armor.anchors(m.anchors());ArmorTestSupport.set(c,armor,-100);}
+  projectileWithHitboxes(h,kind,1,1);
+ }
+ public static void projectileWithHitboxes(GameTestHelper h,int kind,int boxCount,int damageMode){
+  var c=core(h);
+  var anchors=List.of(ModuleAnchor.create(c,c.getBlockPos().east(2),Direction.EAST));
+  for(int i=0;i<boxCount;i++){
+   var box=c.modules().add("entity_hitbox");
+   box.anchors(anchors);
+   box.edit("hitboxDamageMode",damageMode,"");
+   box.edit("hitboxWidth",2,"");
+  }
+  c.modules().damageBoxes.tick(c);
+  if(kind==5){var armor=c.modules().add("armor");armor.anchors(anchors);ArmorTestSupport.set(c,armor,-100);}
   h.runAfterDelay(4,()->{
+   h.assertTrue(c.modules().damageBoxes.entities().size()==boxCount,"Expected active receivers: "+boxCount);
    var level=h.getLevel();var center=SableBodyProbe.toWorld(level,c.getBlockPos().east(2).getCenter());var caster=TestActors.creative(level);caster.setPos(center.add(5,0,0));caster.setHealth(10);
    AbstractMagicProjectile shot=switch(kind){case 0->new MagicMissileProjectile(level,caster);case 1,4->new FireArrowProjectile(level,caster);case 2->new MagicFireball(level,caster);default->new io.redspace.ironsspellbooks.entity.spells.blood_slash.BloodSlashProjectile(level,caster);};
    shot.setPos(center.add(1.5,0,0));shot.setDeltaMovement(-3,0,0);shot.setNoGravity(true);shot.setDamage(20);shot.setExplosionRadius(4);
@@ -150,6 +164,80 @@ public final class IronSpellsTestScenarios {
   finally{ServerConfigs.SPELL_GREIFING.set(old);}
   h.runAfterDelay(2,()->{shot.setDealDamageActive();boolean prev=ServerConfigs.SPELL_GREIFING.get();try{ServerConfigs.SPELL_GREIFING.set(false);shot.tick();h.assertTrue(c.health().current()==before-(wall?0:16),"Reactivated cone failed next native window");}finally{ServerConfigs.SPELL_GREIFING.set(prev);shot.discard();}h.succeed();});
  });}
+ public static void fireBreathHitboxes(GameTestHelper h, boolean hybrid) {
+   var core = core(h);
+   for (int index = 0; index < 2; index++) {
+     var module = core.modules().add("entity_hitbox");
+     module.edit("hitboxDamageMode", hybrid ? 1 : 0, "");
+     // The Hybrid boxes sit slightly above the struck block so their centers stay visible to the native cone.
+     module.edit("hitboxOffsetY", hybrid ? .625 : 4, "");
+     module.anchors(List.of(ModuleAnchor.create(core, core.getBlockPos().east(2), Direction.UP)));
+   }
+   core.modules().damageBoxes.tick(core);
+   h.runAfterDelay(4, () -> {
+     var level = h.getLevel();
+     var receivers = core.modules().damageBoxes.entities();
+     h.assertTrue(receivers.size() == 2 && EntityHitboxes.hybrid(core) == hybrid,
+             "Fixture did not create two receivers in the requested mode");
+     var caster = TestActors.creative(level);
+     caster.setYRot(90);
+     caster.setXRot(0);
+     var breath = new FireBreathProjectile(level, caster);
+     breath.setDamage(8);
+     h.assertTrue(SpellRegistry.FIRE_BREATH_SPELL.get().getDamageSource(breath, caster).getFireTime() > 0,
+             "Fixture spell has no ignition effect");
+     float before = core.health().current();
+     var firstPulse = tickFireBreath(core, receivers.getFirst(), caster, breath);
+     h.assertTrue(firstPulse.receiverHits() == 2,
+             "The native cone did not reach both receivers");
+     h.assertTrue(firstPulse.bodyLoss() == (hybrid ? 8 : 0), "First pulse did not exercise the expected body route");
+     h.assertTrue(core.health().current() == before - 8, "First fire-breath pulse was lost or counted twice");
+     var idle = tickFireBreath(core, receivers.getFirst(), caster, breath);
+     h.assertTrue(idle.receiverHits() == 0 && idle.bodyLoss() == 0 &&
+             core.health().current() == before - 8, "Fire breath applied damage outside a native pulse");
+     h.assertTrue(receivers.stream().allMatch(box -> box.getRemainingFireTicks() <= 0 && !box.isOnFire()),
+             "First fire-breath pulse ignited a receiver");
+
+     h.runAfterDelay(10, () -> {
+       breath.setDealDamageActive();
+       var laterPulse = tickFireBreath(core, receivers.getFirst(), caster, breath);
+       h.assertTrue(laterPulse.receiverHits() == 2,
+               "The native cone did not reach both receivers on its second pulse");
+       h.assertTrue(laterPulse.bodyLoss() == (hybrid ? 8 : 0), "Second pulse did not exercise the expected body route");
+       h.assertTrue(core.health().current() == before - 16, "Later fire-breath pulse was lost or counted twice");
+       h.assertTrue(receivers.stream().allMatch(box -> box.getRemainingFireTicks() <= 0 && !box.isOnFire()),
+               "Later fire-breath pulse ignited a receiver");
+       breath.discard();
+       h.succeed();
+     });
+   });
+ }
+ private record FireBreathPulse(int receiverHits, float bodyLoss) {}
+
+ private static FireBreathPulse tickFireBreath(HeartBlockEntity core, EntityHitbox receiver, ServerPlayer caster,
+                                              FireBreathProjectile breath) {
+   var center = receiver.getBoundingBox().getCenter();
+   caster.setPos(center.add(3, .5 - caster.getEyeHeight(), 0));
+   var receiverHits = new java.util.HashSet<UUID>();
+   java.util.function.Consumer<SpellDamageEvent> listener = event -> {
+     if (event.getEntity() instanceof EntityHitbox box && box.core() == core &&
+             event.getSpellDamageSource().getDirectEntity() == breath) receiverHits.add(box.getUUID());
+   };
+   var bus = net.neoforged.neoforge.common.NeoForge.EVENT_BUS;
+   boolean griefing = ServerConfigs.SPELL_GREIFING.get();
+   bus.addListener(listener);
+   try {
+     ServerConfigs.SPELL_GREIFING.set(false);
+     float before = core.health().current();
+     breath.tick();
+     float bodyLoss = before - core.health().current();
+     core.modules().damageBoxes.flush(core);
+     return new FireBreathPulse(receiverHits.size(), bodyLoss);
+   } finally {
+     ServerConfigs.SPELL_GREIFING.set(griefing);
+     bus.unregister(listener);
+   }
+ }
  public static void siphon(GameTestHelper h){var c=core(h);var armor=c.modules().add("armor");armor.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.EAST)));ArmorTestSupport.set(c,armor,-50);h.runAfterDelay(4,()->{
   var l=h.getLevel();var center=SableBodyProbe.toWorld(l,c.getBlockPos().east(2).getCenter());var caster=TestActors.creative(l);caster.setPos(center.add(3,-caster.getEyeHeight(),0));caster.setYRot(90);caster.setXRot(0);caster.setHealth(5);
   var spell=SpellRegistry.RAY_OF_SIPHONING_SPELL.get();float before=c.health().current();spell.onCast(l,2,caster,CastSource.COMMAND,new MagicData());float loss=before-c.health().current();

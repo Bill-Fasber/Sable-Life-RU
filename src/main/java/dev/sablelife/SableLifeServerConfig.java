@@ -1,9 +1,12 @@
 package dev.sablelife;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
+import dev.sablelife.api.module.ModuleDefinition.Core;
 
 /** Resource limits and module switches are server-owned. Saved configurations are retained. */
 public final class SableLifeServerConfig {
+    public static final int DEFAULT_MODULES_PER_CREATURE = 256;
+    public static final int DEFAULT_REDSTONE_OUTPUT_FACES = 16;
     public static final java.util.List<String> DEFAULT_TOKEN_VALUES=java.util.List.of(
             "minecraft:copper_ingot=10",
             "minecraft:iron_ingot=30",
@@ -24,9 +27,10 @@ public final class SableLifeServerConfig {
     private static final java.util.Map<String,ModConfigSpec.BooleanValue> REDSTONE_MODULES=new java.util.LinkedHashMap<>();
     private static final java.util.Map<String,ModConfigSpec.BooleanValue> SURVIVAL_MODULES=new java.util.LinkedHashMap<>();
     private static final ModConfigSpec.ConfigValue<java.util.List<String>> DISABLED_ADDON_MODULES;
-    private static final ModConfigSpec.BooleanValue SURVIVAL_LIFE_CORE_EDITING, WILD_ENCOUNTERS;
+    private static final java.util.Map<Core, ModConfigSpec.ConfigValue<java.util.List<String>>> DISABLED_CORE_ADDONS = new java.util.EnumMap<>(Core.class);
+    private static final ModConfigSpec.BooleanValue SURVIVAL_LIFE_CORE_EDITING, WILD_ENCOUNTERS, UNSUPPORTED_REMOTE_CLAIMS;
     private static final ModConfigSpec.IntValue CHANNELS, PARTICLES, CLEANUP, MODULES;
-    private static final ModConfigSpec.IntValue FACTIONS_PER_PLAYER;
+    private static final ModConfigSpec.IntValue FACTIONS_PER_PLAYER, REDSTONE_OUTPUT_FACES;
     private static final ModConfigSpec.IntValue PROJECTILES, CREATURE_PROJECTILES, ENTITY_HITBOXES, BLUEPRINT_PROJECTION;
     private static final int DEFAULT_ENTITY_HITBOXES=8;
     private static final ModConfigSpec.ConfigValue<java.util.List<String>> TOKEN_VALUES;
@@ -39,7 +43,13 @@ public final class SableLifeServerConfig {
         var builder = new ModConfigSpec.Builder();
         CHANNELS = builder.comment("Maximum newly authored wireless channels per core. Existing saves keep their channels.")
                 .defineInRange("maximumWirelessChannels", 256, 1, 65535);
-        MODULES=builder.comment("Maximum newly authored virtual modules per core; existing saved modules are retained up to the storage limit of 256.").defineInRange("maximumModulesPerCreature",128,16,256);
+        REDSTONE_OUTPUT_FACES = builder.comment(
+                "Maximum newly authored output faces per Wireless Channel or Wireless Redstone module. Default 16; range 1-64.",
+                "Existing saved faces remain usable and can be remarked, previewed or removed. Adding requires a count below this limit.",
+                "This is a per-channel/per-module authoring limit, not a total runtime limit per creature.")
+                .translation("config.sablelife.maximum_redstone_output_faces")
+                .defineInRange("maximumRedstoneOutputFaces", DEFAULT_REDSTONE_OUTPUT_FACES, 1, dev.sablelife.module.ModuleRedstone.MAX_OUTPUT_FACES);
+        MODULES=builder.comment("Maximum newly authored virtual modules per core. Existing saved modules are retained up to the storage limit of " + dev.sablelife.module.HeartModules.LIMIT + ".").defineInRange("maximumModulesPerCreature",DEFAULT_MODULES_PER_CREATURE,16,dev.sablelife.module.HeartModules.LIMIT);
         FACTIONS_PER_PLAYER=builder.comment("Maximum factions one non-operator player can own/create. 0 disables this personal limit. Operators (permission level 2+) bypass it. Existing factions and joining other factions are unaffected; the global 256-faction storage limit still applies.")
                 .defineInRange("maximumFactionsPerPlayer",1,0,256);
         PARTICLES = builder.comment("Visual particle points per player per server tick. Damage and timing are unaffected.")
@@ -67,6 +77,13 @@ public final class SableLifeServerConfig {
                 "Survival players gain Heart Core editing, including loot and experience rewards and terrain destruction.",
                 "Players can farm items and experience or destroy terrain. These effects can be difficult to control.")
                 .define("allowEditHeartCoreUnderSurvivalMode", false);
+        UNSUPPORTED_REMOTE_CLAIMS = builder.comment(
+                "Allow Core Remote use when a detected claim mod has no supported permission integration. Default false.",
+                "This also applies in singleplayer and to Core Remote-based inspection access.",
+                "Supported integrations still enforce claim permissions, including denied or failed checks.",
+                "Core editing permissions, binding reach, dimension, loading and world protection checks still apply.")
+                .translation("config.sablelife.allow_unsupported_remote_claims")
+                .define("allowCoreRemoteWithUnsupportedClaims", false);
         WILD_ENCOUNTERS = builder.comment(
                 "Master switch for the Wild Encounter Tool and natural blueprint encounters.",
                 "Set false to disable automatic and test spawning and suspend encounter lifetime cleanup. Saved rules are retained.")
@@ -92,17 +109,21 @@ public final class SableLifeServerConfig {
         builder.comment("Server-owned module switches. False hides new modules and suspends existing modules without deleting their settings.").push("modules");
         builder.push("heartCore");
         for(String type:dev.sablelife.module.VirtualModule.AVAILABLE_TYPES)LIFE_MODULES.put(type,builder.define(type,true));
+        defineCoreAddonSwitches(builder, Core.HEART);
         builder.pop();
         builder.comment("Only supported control modules are configurable here; this table cannot grant Heart Core capabilities.").push("redstoneCore");
         for(String type:dev.sablelife.heart.RedstoneCorePolicy.TYPES)REDSTONE_MODULES.put(type,builder.define(type,dev.sablelife.heart.RedstoneCorePolicy.defaultEnabled(type)));
+        defineCoreAddonSwitches(builder, Core.REDSTONE);
         builder.pop();
         builder.comment("Skill switches for the Survival Heart Core. Unsupported skills stay unavailable.").push("survivalHeartCore");
-        for(String type:dev.sablelife.heart.SurvivalLifeCorePolicy.TYPES)SURVIVAL_MODULES.put(type,builder.define(type,true));
+        for(String type:dev.sablelife.heart.SurvivalLifeCorePolicy.TYPES) {
+            if (type.equals("message_display")) builder.comment("Allow Message Display on Survival Heart Cores. Recipients must be in range and in the same dimension.");
+            SURVIVAL_MODULES.put(type,builder.define(type,survivalModuleDefault(type)));
+        }
+        defineCoreAddonSwitches(builder, Core.SURVIVAL);
         builder.pop();
         DISABLED_ADDON_MODULES = builder.comment("Addon module IDs disabled on all cores, as namespace:path. Saved module settings are retained.")
-                .define("disabledAddonModules", java.util.List.of(), value -> value instanceof java.util.List<?> entries
-                        && entries.stream().allMatch(entry -> entry instanceof String id && id.length() <= 64
-                        && id.indexOf(':') > 0 && net.minecraft.resources.ResourceLocation.tryParse(id) != null));
+                .define("disabledAddonModules", java.util.List.of(), SableLifeServerConfig::validAddonIds);
         builder.pop();
         builder.push("survivalTokens");
         TOKEN_VALUES=builder.comment("All refueling materials as item_id=energy_value, including copper. Later duplicate entries override earlier ones. An empty list disables refueling.")
@@ -126,6 +147,16 @@ public final class SableLifeServerConfig {
         SPEC = builder.build();
         LOADER_SPEC = new ServerConfigMigration(SPEC);
     }
+    private static boolean validAddonIds(Object value) {
+        return value instanceof java.util.List<?> entries
+                && entries.stream().allMatch(entry -> entry instanceof String id && id.length() <= 64
+                && id.indexOf(':') > 0 && net.minecraft.resources.ResourceLocation.tryParse(id) != null);
+    }
+    private static void defineCoreAddonSwitches(ModConfigSpec.Builder builder, Core core) {
+        DISABLED_CORE_ADDONS.put(core, builder.comment("Java addon and Datapack module IDs disabled on this core, as namespace:path.")
+                .define("disabledAddonModules", java.util.List.of(), SableLifeServerConfig::validAddonIds));
+    }
+    private static boolean survivalModuleDefault(String type) { return !type.equals("message_display"); }
     public static boolean wildEncountersEnabled() {
         return SPEC.isLoaded() && WILD_ENCOUNTERS.get();
     }
@@ -138,20 +169,26 @@ public final class SableLifeServerConfig {
     public static int maximumWildBlueprintHorizontalSize(){return SPEC.isLoaded()?WILD_SIZE.get():256;}
     public static int wildPlacementScanVoxels(){return SPEC.isLoaded()?WILD_SCAN.get():4194304;}
     public static int maximumWildClearedBlocks(){return SPEC.isLoaded()?WILD_CLEAR.get():131072;}
+    public static boolean allowCoreRemoteWithUnsupportedClaims() {
+        return SPEC.isLoaded() && UNSUPPORTED_REMOTE_CLAIMS.get();
+    }
     public static boolean allowSurvivalLifeCoreEditing() {
         return SPEC.isLoaded() && SURVIVAL_LIFE_CORE_EDITING.get();
     }
-    public static int maximumModulesPerCreature(){return SPEC.isLoaded()?MODULES.get():128;}
+    public static int maximumModulesPerCreature(){return SPEC.isLoaded()?MODULES.get():DEFAULT_MODULES_PER_CREATURE;}
     public static boolean moduleEnabled(boolean redstoneCore,String type){
         var setting=(redstoneCore?REDSTONE_MODULES:LIFE_MODULES).get(type);
         return setting!=null&&(SPEC.isLoaded()?setting.get():!redstoneCore||dev.sablelife.heart.RedstoneCorePolicy.defaultEnabled(type));
     }
     public static boolean survivalModuleEnabled(String type){
         var setting=SURVIVAL_MODULES.get(type);
-        return setting!=null&&(!SPEC.isLoaded()||setting.get());
+        return setting!=null&&(SPEC.isLoaded()?setting.get():survivalModuleDefault(type));
     }
     public static boolean addonModuleEnabled(String type) {
         return !SPEC.isLoaded() || !DISABLED_ADDON_MODULES.get().contains(type);
+    }
+    public static boolean addonModuleEnabled(String type, Core core) {
+        return !SPEC.isLoaded() || addonModuleEnabled(type) && !DISABLED_CORE_ADDONS.get(core).get().contains(type);
     }
     public static java.util.List<String> tokenValues(){return SPEC.isLoaded()?TOKEN_VALUES.get():DEFAULT_TOKEN_VALUES;}
     public static int activationTokenRate(){return SPEC.isLoaded()?ACTIVATION_RATE.get():1;}
@@ -161,6 +198,9 @@ public final class SableLifeServerConfig {
     public static int meleeTokenRate(){return SPEC.isLoaded()?MELEE_RATE.get():1;}
     public static int healingTokenRate(){return SPEC.isLoaded()?HEAL_RATE.get():1;}
     public static int maximumWirelessChannels() { return SPEC.isLoaded() ? CHANNELS.get() : 256; }
+    public static int maximumRedstoneOutputFaces() {
+        return SPEC.isLoaded() ? REDSTONE_OUTPUT_FACES.get() : DEFAULT_REDSTONE_OUTPUT_FACES;
+    }
     public static int maximumFactionsPerPlayer() { return SPEC.isLoaded() ? FACTIONS_PER_PLAYER.get() : 1; }
     public static int particlePointsPerPlayerTick() { return SPEC.isLoaded() ? PARTICLES.get() : 8192; }
     public static int deathCleanupBlocksPerTick() { return SPEC.isLoaded() ? CLEANUP.get() : 256; }

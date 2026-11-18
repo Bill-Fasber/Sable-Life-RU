@@ -26,7 +26,7 @@ public final class AnchorTransfers {
                 if (stored == null) continue;
                 var pos = transform.apply(entry.source); var body = Sable.HELPER.getContaining(destination, pos);
                 if (body == null || destination != heartLevel) {
-                    module.invalidate(); heart.modules().changed(); heart.setChanged(); continue;
+                    invalidate(module, stored); heart.modules().changed(); heart.setChanged(); continue;
                 }
                 var direction = transform.getRotation().rotate(stored.anchor().face());
                 if (module.replaceStoredAnchor(entry.group, entry.index,
@@ -62,12 +62,25 @@ public final class AnchorTransfers {
                 module.watchedPart(null); heart.modules().changed(); heart.setChanged();
             }
             if (module.invalidated()) continue;
-            for (var anchor : module.anchors()) {
+            boolean wireless = module.type().equals("wireless_redstone");
+            boolean changed = false;
+            var anchors = module.anchors();
+            for (int i = 0; i < anchors.size(); i++) {
+                var anchor = anchors.get(i);
                 var body = anchor.body(heart);
                 if (body != null && anchor.position(body).equals(pos)) {
-                    module.invalidate(); heart.modules().changed(); heart.setChanged(); break;
+                    if (wireless) changed |= module.invalidateRedstoneFace(i);
+                    else { module.invalidate(); changed = true; break; }
                 }
             }
+            if (changed) { heart.modules().changed(); heart.setChanged(); }
         }
+    }
+
+    private static boolean invalidate(VirtualModule module, VirtualModule.StoredAnchor stored) {
+        if (module.type().equals("wireless_redstone") && stored.group().equals("Anchors"))
+            return module.invalidateRedstoneFace(stored.index());
+        module.invalidate();
+        return true;
     }
 }

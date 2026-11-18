@@ -2,10 +2,12 @@ package dev.sablelife.client;
 
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import dev.sablelife.SableLife;
+import dev.sablelife.module.ParticleSpriteStyle;
 import net.minecraft.client.Camera;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.particle.*;
 import net.minecraft.util.Mth;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -45,6 +47,79 @@ public final class BundledParticles {
         event.registerSpriteSet(SableLife.SOFT_FOG.get(), sprites -> (type,level,x,y,z,vx,vy,vz) -> new Shape(level,x,y,z,vx,vy,vz,sprites,5));
         event.registerSpriteSet(SableLife.STARBURST.get(), sprites -> (type,level,x,y,z,vx,vy,vz) -> new Shape(level,x,y,z,vx,vy,vz,sprites,6));
         event.registerSpriteSet(SableLife.RANDOM_STARBURST.get(), sprites -> (type,level,x,y,z,vx,vy,vz) -> new Shape(level,x,y,z,vx,vy,vz,sprites,7));
+        for (var style : ParticleSpriteStyle.values()) {
+            event.registerSpriteSet(SableLife.spriteParticle(style), sprites ->
+                    (type,level,x,y,z,vx,vy,vz) -> new AnimatedSprite(level,x,y,z,vx,vy,vz,sprites,style));
+        }
+    }
+
+    public static final class AnimatedSprite extends TextureSheetParticle {
+        private final ParticleSpriteStyle style;
+        private final SpriteSet sprites;
+        private final float spin;
+
+        AnimatedSprite(ClientLevel level, double x, double y, double z,
+                       double vx, double vy, double vz, SpriteSet sprites, ParticleSpriteStyle style) {
+            super(level, x, y, z);
+            this.style = style;
+            this.sprites = sprites;
+            lifetime = style.lifetime();
+            quadSize = style.size();
+            int rgb = style.color();
+            setColor(((rgb >> 16) & 255) / 255F, ((rgb >> 8) & 255) / 255F, (rgb & 255) / 255F);
+            hasPhysics = false;
+            friction = .96F;
+            xd = vx;
+            yd = vy;
+            zd = vz;
+            spin = style == ParticleSpriteStyle.METAL_CHIP ? (random.nextFloat() - .5F) * 8F : 0;
+            if (style == ParticleSpriteStyle.METAL_CHIP) {
+                gravity = .18F;
+                if (vx * vx + vy * vy + vz * vz < 1e-10) {
+                    xd = (random.nextDouble() - .5) * .08;
+                    yd = .04 + random.nextDouble() * .05;
+                    zd = (random.nextDouble() - .5) * .08;
+                }
+            }
+            setSprite(sprites.get(0, 2));
+        }
+
+        @Override public void tick() {
+            super.tick();
+            if (style == ParticleSpriteStyle.ELLIPSIS && isAlive()) {
+                int frame = Math.min(2, 3 * age / Math.max(1, lifetime));
+                setSprite(sprites.get(frame, 2));
+            }
+        }
+
+        @Override public ParticleRenderType getRenderType() {
+            return ShaderParticleCompat.active() ? ParticleRenderType.PARTICLE_SHEET_TRANSLUCENT : SOFT;
+        }
+
+        @Override public void render(VertexConsumer out, Camera camera, float partial) {
+            float elapsed = age + partial;
+            float t = Mth.clamp(elapsed / Math.max(1, lifetime), 0, 1);
+            float scale = switch (style) {
+                case ALERT -> t < .18F ? Mth.lerp(t / .18F, .55F, 1.18F) : 1F + .18F * (1F - t) / .82F;
+                case FAULT, BOLT -> 1.15F - .35F * t;
+                default -> 1F;
+            };
+            float angle = switch (style) {
+                case QUESTION -> .13F * Mth.sin(t * Mth.TWO_PI * 1.5F);
+                case METAL_CHIP -> spin * t;
+                default -> 0;
+            };
+            float fade = switch (style) {
+                case FAULT, BOLT -> envelope(elapsed, lifetime) * (1 - .65F * t);
+                case FAULT_SPARK -> envelope(elapsed, lifetime) * (.55F + .45F * Math.abs(Mth.cos(t * Mth.TWO_PI * 2)));
+                default -> envelope(elapsed, lifetime);
+            };
+            float rise = style == ParticleSpriteStyle.ALERT ? quadSize * .75F * t : 0;
+            Vec3 pos = new Vec3(Mth.lerp(partial, xo, x), Mth.lerp(partial, yo, y) + rise, Mth.lerp(partial, zo, z));
+            int light = style == ParticleSpriteStyle.METAL_CHIP ? getLightColor(partial) : 0xF000F0;
+            billboard(pos, out, camera, quadSize * scale, angle, alpha * fade, rCol, gCol, bCol,
+                    light, getU0(), getU1(), getV0(), getV1());
+        }
     }
     public static final class Smoke extends SmokeParticle {
         Smoke(ClientLevel level,double x,double y,double z,double vx,double vy,double vz,SpriteSet sprites) {

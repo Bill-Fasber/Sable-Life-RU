@@ -19,16 +19,18 @@ import java.util.List;
 
 public final class SurvivalTopUpMenu extends AbstractContainerMenu {
     public static final int INPUTS=9, INVENTORY_Y=141;
-    private final SimpleContainer inputs=new SimpleContainer(INPUTS), data=new SimpleContainer(1);
+    public static final int CONFIRM=0, BACK=1, ENABLE_AUTO=2, DISABLE_AUTO=3;
+    private final SimpleContainer inputs, data=new SimpleContainer(1);
     private final HeartBlockEntity heart;
     private List<ItemStack> confirmed=List.of();
-    private long confirmedValue, confirmationUntil;
+    private long confirmedValue, confirmedRevision, confirmationUntil;
 
     public SurvivalTopUpMenu(int id,Inventory inventory){this(id,inventory,null);}
 
     public SurvivalTopUpMenu(int id,Inventory inventory,HeartBlockEntity heart){
         super(SableLife.SURVIVAL_TOP_UP_MENU.get(),id);
         this.heart=heart;
+        inputs=heart==null?new SimpleContainer(INPUTS):heart.survivalFuel();
         for(int i=0;i<INPUTS;i++)addSlot(new Slot(inputs,i,12+i*18,106){
             @Override public boolean mayPlace(ItemStack stack){
                 return heart==null?catalogContains(stack):SurvivalTokens.depositValue(stack)>0;
@@ -51,7 +53,8 @@ public final class SurvivalTopUpMenu extends AbstractContainerMenu {
                 .equals(BuiltInRegistries.ITEM.getKey(stack.getItem()).toString()));
     }
     private boolean confirmationMatches(long value){
-        if(confirmed.isEmpty()||value!=confirmedValue||heart.getLevel().getGameTime()>confirmationUntil)return false;
+        if(confirmed.isEmpty()||value!=confirmedValue||heart.survivalFuel().revision()!=confirmedRevision
+                ||heart.getLevel().getGameTime()>confirmationUntil)return false;
         for(int i=0;i<INPUTS;i++)if(!ItemStack.matches(confirmed.get(i),inputs.getItem(i)))return false;
         return true;
     }
@@ -61,7 +64,9 @@ public final class SurvivalTopUpMenu extends AbstractContainerMenu {
         long value=SurvivalTokens.inputValue(inputs);
         tag.putLong("Balance",heart.survivalTokenBalance());
         tag.putLong("Value",value);
+        tag.putBoolean("CanConfirm", value>0 && value<=Long.MAX_VALUE-heart.survivalTokenBalance());
         tag.putBoolean("Confirming",confirmationMatches(value));
+        tag.putBoolean("Automatic",heart.survivalFuel().automatic());
         var catalog=new ListTag();
         SurvivalTokens.catalog().forEach((item,price)->{
             var row=new CompoundTag();
@@ -76,23 +81,30 @@ public final class SurvivalTopUpMenu extends AbstractContainerMenu {
     }
 
     @Override public boolean stillValid(Player player){
-        return heart==null||heart.canToggleBreaking(player)&&heart.editorInRange(player, 64);
+        return heart==null||heart.canRefuel()&&heart.canToggleBreaking(player)&&heart.editorInRange(player, 64);
     }
 
     @Override public boolean clickMenuButton(Player player,int id){
         if(heart==null||!stillValid(player))return false;
-        if(id==1){heart.openDashboard(player);return true;}
-        if(id!=0)return false;
+        if(id==BACK){heart.openDashboard(player);return true;}
+        if(id==ENABLE_AUTO||id==DISABLE_AUTO){
+            heart.survivalFuel().automatic(id==ENABLE_AUTO);
+            confirmed=List.of();
+            broadcastChanges();
+            return true;
+        }
+        if(id!=CONFIRM)return false;
         long value=SurvivalTokens.inputValue(inputs);
         if(value<=0||value>Long.MAX_VALUE-heart.survivalTokenBalance())return false;
         if(confirmationMatches(value)){
-            if(!heart.depositSurvivalTokens(player,inputs))return false;
+            if(!heart.settleRefuel())return false;
             confirmed=List.of();
         }else{
             var copy=new ArrayList<ItemStack>(INPUTS);
             for(int i=0;i<INPUTS;i++)copy.add(inputs.getItem(i).copy());
             confirmed=List.copyOf(copy);
             confirmedValue=value;
+            confirmedRevision=heart.survivalFuel().revision();
             confirmationUntil=heart.getLevel().getGameTime()+100;
         }
         broadcastChanges();
@@ -113,8 +125,4 @@ public final class SurvivalTopUpMenu extends AbstractContainerMenu {
         return copy;
     }
     @Override public void broadcastChanges(){refresh();super.broadcastChanges();}
-    @Override public void removed(Player player){
-        super.removed(player);
-        if(!player.level().isClientSide)clearContainer(player,inputs);
-    }
 }

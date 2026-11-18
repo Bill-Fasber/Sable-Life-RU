@@ -13,7 +13,12 @@ import net.minecraft.gametest.framework.GameTest;
 import net.minecraft.gametest.framework.GameTestHelper;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.projectile.Arrow;
+import net.minecraft.world.entity.projectile.SmallFireball;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.gametest.GameTestHolder;
 import net.neoforged.neoforge.gametest.PrefixGameTestTemplate;
 import java.util.List;
@@ -84,5 +89,53 @@ public final class HitboxEffectsGameTests {
     public static void PotionImmunityDoesNotBlockOrdinaryMagicDamage(GameTestHelper h){
         var core=core(h,0,1);var box=boxes(core).getFirst();box.hurt(h.getLevel().damageSources().magic(),12);core.modules().damageBoxes.flush(core);
         h.assertTrue(core.health().current()==988,"Potion immunity blocked direct magic damage");h.succeed();
+    }
+
+    @GameTest(template = "combat", batch = "hitbox_burning_arrow", timeoutTicks = 75)
+    public static void RealBurningArrowKeepsImpactDamageWithoutIgnitingReceiver(GameTestHelper h) {
+        var core = core(h, 0, 2);
+        for (var box : boxes(core)) {
+            core.modules().find(box.moduleId()).edit("hitboxOffsetY", 4, "");
+        }
+        core.modules().damageBoxes.tick(core);
+        var center = boxes(core).getFirst().getBoundingBox().getCenter();
+        var arrow = new Arrow(h.getLevel(), center.x - 3, center.y, center.z, new ItemStack(Items.ARROW), null);
+        arrow.igniteForSeconds(5);
+        arrow.setNoGravity(true);
+        arrow.setDeltaMovement(1, 0, 0);
+        h.assertTrue(arrow.isOnFire(), "Fixture arrow was not burning");
+        h.getLevel().addFreshEntity(arrow);
+
+        h.runAfterDelay(10, () -> {
+            float healthAfterImpact = core.health().current();
+            h.assertTrue(healthAfterImpact < 1000, "Burning arrow lost its direct impact damage");
+            assertNoFire(h, core);
+            h.runAfterDelay(45, () -> {
+                assertNoFire(h, core);
+                h.assertTrue(core.health().current() == healthAfterImpact, "Burning arrow caused later damage");
+                h.succeed();
+            });
+        });
+    }
+
+    @GameTest(template = "combat", batch = "hitbox_fire_impact")
+    public static void IgnitionImmunityKeepsDirectFireballDamage(GameTestHelper h) {
+        var core = core(h, 0, 1);
+        var box = boxes(core).getFirst();
+        box.igniteForSeconds(5);
+        box.setRemainingFireTicks(100);
+        assertNoFire(h, core);
+
+        var fireball = new SmallFireball(h.getLevel(), box.getX(), box.getY(), box.getZ(), Vec3.ZERO);
+        var source = h.getLevel().damageSources().fireball(fireball, null);
+        h.assertTrue(box.hurt(source, 12), "Direct fireball hit was rejected");
+        core.modules().damageBoxes.flush(core);
+        h.assertTrue(core.health().current() == 988, "Direct fireball damage did not reach the core");
+        h.succeed();
+    }
+
+    private static void assertNoFire(GameTestHelper h, HeartBlockEntity core) {
+        h.assertTrue(boxes(core).stream().allMatch(box -> box.getRemainingFireTicks() <= 0 && !box.isOnFire()),
+                "A receiver retained a burning state");
     }
 }

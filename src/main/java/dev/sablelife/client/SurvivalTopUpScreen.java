@@ -4,6 +4,7 @@ import dev.sablelife.SableLife;
 import dev.sablelife.heart.SurvivalTopUpMenu;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
@@ -19,7 +20,7 @@ import net.neoforged.neoforge.client.event.RegisterMenuScreensEvent;
 public final class SurvivalTopUpScreen extends AbstractContainerScreen<SurvivalTopUpMenu> {
     private static final int COLUMNS=15, PER_PAGE=COLUMNS*3;
     private int page;
-    private Button previous,next,confirm;
+    private Button previous,next,confirm,automatic;
 
     public SurvivalTopUpScreen(SurvivalTopUpMenu menu,Inventory inventory,Component title){
         super(menu,inventory,title);
@@ -35,8 +36,11 @@ public final class SurvivalTopUpScreen extends AbstractContainerScreen<SurvivalT
         super.init();
         previous=button(Component.literal("<"),12,80,24,()->{page--;sync();});
         next=button(Component.literal(">"),259,80,24,()->{page++;sync();});
-        confirm=button(tr("confirm"),181,112,102,()->click(0));
-        button(Component.translatable("menu.sablelife.back"),229,5,54,()->click(1));
+        confirm=button(tr("confirm"),181,112,102,()->click(SurvivalTopUpMenu.CONFIRM));
+        automatic=button(tr("automatic_off"),181,130,102,()->click(menu.snapshot().getBoolean("Automatic")
+                ? SurvivalTopUpMenu.DISABLE_AUTO : SurvivalTopUpMenu.ENABLE_AUTO));
+        automatic.setTooltip(Tooltip.create(tr("automatic_hint")));
+        button(Component.translatable("menu.sablelife.back"),229,5,54,()->click(SurvivalTopUpMenu.BACK));
         sync();
     }
     private Button button(Component text,int x,int y,int width,Runnable click){
@@ -49,8 +53,12 @@ public final class SurvivalTopUpScreen extends AbstractContainerScreen<SurvivalT
         page=Math.clamp(page,0,last);
         previous.active=page>0;
         next.active=page<last;
-        confirm.active=data.getLong("Value")>0;
+        confirm.active=data.contains("CanConfirm")?data.getBoolean("CanConfirm"):data.getLong("Value")>0;
         confirm.setMessage(tr(data.getBoolean("Confirming")?"confirm_again":"confirm"));
+        boolean enabled=data.getBoolean("Automatic");
+        automatic.active=data.contains("Automatic");
+        automatic.setMessage(tr(enabled?"automatic_on":"automatic_off"));
+        LifeUiStyle.fill(automatic,enabled?0xFF24543B:0);
     }
     @Override protected void containerTick(){super.containerTick();sync();}
 

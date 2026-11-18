@@ -1,5 +1,5 @@
 {
-  "revision": 205,
+  "revision": 241,
   "entries": [
     {
       "id": "getting_started",
@@ -85,7 +85,8 @@
           "manual.sablelife.preview_system.brief_usage"
         ],
         "example": [
-          "manual.sablelife.preview_system.example"
+          "manual.sablelife.preview_system.example",
+          "manual.sablelife.preview_system.inspection"
         ],
         "troubleshooting": [
           "manual.sablelife.preview_system.troubleshooting"
@@ -164,6 +165,21 @@
         ],
         "troubleshooting": [
           "manual.sablelife.natural_spawning.troubleshooting"
+        ]
+      }
+    },
+    {
+      "id": "command_wand",
+      "title": "manual.sablelife.chapter.command_wand",
+      "sections": {
+        "usage": [
+          "manual.sablelife.command_wand.brief_usage"
+        ],
+        "example": [
+          "manual.sablelife.command_wand.priority"
+        ],
+        "troubleshooting": [
+          "manual.sablelife.command_wand.troubleshooting"
         ]
       }
     },
@@ -965,6 +981,54 @@
         ]
       },
       "module": "part_break"
+    },
+    {
+      "id": "message_display",
+      "title": "dashboard.sablelife.type_message_display",
+      "sections": {
+        "usage": [
+          "manual.sablelife.message_display.brief_usage"
+        ],
+        "example": [
+          "manual.sablelife.message_display.brief_example"
+        ],
+        "troubleshooting": [
+          "manual.sablelife.message_display.brief_troubleshooting"
+        ]
+      },
+      "module": "message_display"
+    },
+    {
+      "id": "propulsion",
+      "title": "dashboard.sablelife.type_propulsion",
+      "module": "propulsion",
+      "sections": {
+        "usage": [
+          "manual.sablelife.propulsion.brief_usage"
+        ],
+        "example": [
+          "manual.sablelife.propulsion.brief_example"
+        ],
+        "troubleshooting": [
+          "manual.sablelife.propulsion.brief_troubleshooting"
+        ]
+      }
+    },
+    {
+      "id": "motion_damping",
+      "title": "dashboard.sablelife.type_motion_damping",
+      "module": "motion_damping",
+      "sections": {
+        "usage": [
+          "manual.sablelife.motion_damping.brief_usage"
+        ],
+        "example": [
+          "manual.sablelife.motion_damping.brief_example"
+        ],
+        "troubleshooting": [
+          "manual.sablelife.motion_damping.brief_troubleshooting"
+        ]
+      }
     }
   ]
 }

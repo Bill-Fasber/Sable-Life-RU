@@ -55,4 +55,111 @@ public final class SignalTurnGameTests {
     public static void SixDirectionSettingsPresetsAndDeletedChannelReferencesStaySafe(GameTestHelper h){
         var c=fixture(h,false,false);var m=module(c);c.wireless().add();m.edit("turnRightChannel",2,"");m.edit("turnRightSource",1,"");m.edit("turnSpeed",345,"");m.edit("turnCollision",0,"");var copy=ModulePreset.create(m.save());h.assertTrue(copy.value("turnSpeed")==345&&copy.value("turnCollision")==0&&copy.value("turnRightSource")==1&&copy.value("turnRightChannel")==2&&copy.anchors().isEmpty(),"Turn preset lost settings or copied marks");c.wireless().remove(0);h.assertTrue(m.value("turnLeftChannel")==0&&m.value("turnRightChannel")==1,"Deleted channel silently redirected a turn direction");h.succeed();
     }
+
+    @GameTest(template = "combat", batch = "signal_turn_random_wireless", timeoutTicks = 40)
+    public static void RandomTurnRunsOncePerWirelessActivation(GameTestHelper h) {
+        var core = fixture(h, false, false);
+        var turn = module(core);
+        turn.edit("turnMode", 1, "");
+        turn.edit("turnCollision", 0, "");
+        turn.edit("turnMinYaw", 30, "");
+        turn.edit("turnMaxYaw", 30, "");
+        turn.edit("trigger", 2, "");
+        turn.edit("channel", 0, "");
+        var initial = new Quaterniond(turn.anchors().getFirst().body(core).logicalPose().orientation());
+        core.wireless().programOutputs("random_test", Map.of(0, 1));
+        h.runAfterDelay(9, () -> {
+            assertYaw(h, core, turn, initial, 30);
+            h.assertTrue(state(core, 0).equals("random_done"), "Holding the trigger did not finish one turn");
+            core.wireless().programOutputs("random_test", Map.of());
+        });
+        h.runAfterDelay(12, () -> {
+            h.assertTrue(state(core, 0).equals("idle"), "Falling trigger did not rearm the turn");
+            turn.edit("turnMinYaw", -20, "");
+            turn.edit("turnMaxYaw", -20, "");
+            core.wireless().programOutputs("random_test", Map.of(0, 15));
+        });
+        h.runAfterDelay(22, () -> {
+            assertYaw(h, core, turn, initial, 10);
+            h.succeed();
+        });
+    }
+
+    @GameTest(template = "combat", batch = "signal_turn_random_moves", timeoutTicks = 40)
+    public static void AdjacentMoveActionsEachTurnWithoutATarget(GameTestHelper h) {
+        var core = fixture(h, true, false);
+        var turn = module(core);
+        turn.edit("turnMode", 1, "");
+        turn.edit("turnCollision", 0, "");
+        turn.edit("turnMinYaw", 21, "");
+        turn.edit("turnMaxYaw", 21, "");
+        var initial = new Quaterniond(turn.anchors().getFirst().body(core).logicalPose().orientation());
+        var moveSet = core.modules().add("move_set").moveSet();
+        moveSet.edit("add", 0, "", core.modules());
+        moveSet.edit("dispatchCooldown", 60, "0", core.modules());
+        moveSet.edit("action_add", 0, "0|" + turn.id(), core.modules());
+        moveSet.edit("action_add", 0, "0|" + turn.id(), core.modules());
+        moveSet.edit("action_duration", .4, "0|0", core.modules());
+        moveSet.edit("action_start", .4, "0|1", core.modules());
+        moveSet.edit("action_duration", .4, "0|1", core.modules());
+        h.runAfterDelay(22, () -> {
+            assertYaw(h, core, turn, initial, 42);
+            h.assertTrue(state(core, 0).equals("idle"), "Ended Move Set action retained its trigger");
+            h.succeed();
+        });
+    }
+
+    @GameTest(template = "combat", batch = "signal_turn_random_hurt", timeoutTicks = 40)
+    public static void HurtOnceCanFinishAFullRandomTurnAndRearm(GameTestHelper h) {
+        var core = fixture(h, false, false);
+        var turn = module(core);
+        turn.edit("turnMode", 1, "");
+        turn.edit("turnMinYaw", 24, "");
+        turn.edit("turnMaxYaw", 24, "");
+        turn.edit("trigger", 5, "");
+        var initial = new Quaterniond(turn.anchors().getFirst().body(core).logicalPose().orientation());
+        core.modules().hurtTriggers.hurt(core);
+        h.runAfterDelay(9, () -> {
+            assertYaw(h, core, turn, initial, 24);
+            h.assertFalse(core.modules().hurtTriggers.powered(turn.id()), "Hurt trigger remained active after the turn completed");
+            core.modules().hurtTriggers.hurt(core);
+        });
+        h.runAfterDelay(18, () -> {
+            assertYaw(h, core, turn, initial, 48);
+            h.succeed();
+        });
+    }
+
+    @GameTest(template = "combat", batch = "signal_turn_random_save")
+    public static void TurningModesKeepLegacyChannelsAndSavedAngles(GameTestHelper h) {
+        var core = fixture(h, false, false);
+        var turn = module(core);
+        turn.edit("turnRightSource", 1, "");
+        turn.edit("turnRightChannel", 2, "");
+        var legacy = turn.save();
+        var settings = legacy.getCompound("Settings");
+        for (String field : List.of("turnMode", "turnMinYaw", "turnMaxYaw")) settings.remove(field);
+        var loaded = VirtualModule.load(legacy);
+        h.assertTrue(loaded.value("turnMode") == 0 && loaded.value("turnRightSource") == 1
+                && loaded.value("turnRightChannel") == 2 && !loaded.anchors().isEmpty(), "Legacy signal settings changed");
+        h.assertTrue(loaded.value("turnMinYaw") == -90 && loaded.value("turnMaxYaw") == 90, "Legacy module missed random defaults");
+        loaded.edit("turnMode", 1, "");
+        loaded.edit("turnMinYaw", -200, "");
+        loaded.edit("turnMaxYaw", 42.5, "");
+        var reloaded = VirtualModule.load(loaded.save());
+        h.assertTrue(reloaded.value("turnMode") == 1 && reloaded.value("turnMinYaw") == -180
+                && reloaded.value("turnMaxYaw") == 42.5, "Random settings failed validation or reload");
+        h.assertTrue(!ModuleSignalTurn.visible(reloaded, "turnRightChannel") && ModuleSignalTurn.visible(reloaded, "turnMaxYaw"), "Random mode exposed the wrong fields");
+        reloaded.edit("turnMode", 0, "");
+        h.assertTrue(ModuleSignalTurn.visible(reloaded, "turnRightChannel") && !ModuleSignalTurn.visible(reloaded, "turnMaxYaw")
+                && reloaded.value("turnRightChannel") == 2, "Switching modes lost the directional setup");
+        h.succeed();
+    }
+
+    private static void assertYaw(GameTestHelper h, HeartBlockEntity core, VirtualModule turn, Quaterniond initial, double degrees) {
+        var front = new Vec3(0, 0, -1);
+        var actual = ContactBox.rotate(turn.anchors().getFirst().body(core).logicalPose().orientation(), front);
+        var expected = ContactBox.rotate(new Quaterniond().rotationY(Math.toRadians(degrees)).mul(initial), front);
+        h.assertTrue(actual.distanceTo(expected) < .015, "Expected " + degrees + " degrees, got front vector " + actual);
+    }
 }

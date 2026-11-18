@@ -23,7 +23,8 @@ public final class ArmorRuleMenu extends AbstractContainerMenu {
  public boolean action(Player p,int revision,UUID id,String key,double value){
   if(heart==null||!stillValid(p))return false;var group=module.armorRules().find(id);
   if(!(heart.canEdit(p)&&ModuleAvailability.enabled(heart,module))||revision!=heart.modules().revision()||!Double.isFinite(value)){refresh();sendAllDataToRemote();return false;}
-  if(heart.isSurvivalCore()&&key.equals("modifier")&&value < -ModuleArmor.SURVIVAL_MAX_REDUCTION)return false;
+  if(heart.isSurvivalCore()&&value < -ModuleArmor.SURVIVAL_MAX_REDUCTION
+      && (key.equals("modifier")||key.equals("meleeModifier")||key.equals("projectileModifier")))return false;
   boolean accepted=switch(key){case "add"->module.armorRules().add()!=null;case "delete"->module.armorRules().remove(id);case "up","down"->module.armorRules().move(id,key.equals("up")?-1:1);default->group!=null&&group.edit(key,value);};
   if(accepted){heart.modules().changed();heart.setChanged();}refresh();sendAllDataToRemote();return accepted;
  }

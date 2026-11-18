@@ -92,7 +92,7 @@ public final class EntityHitboxGameTests {
     @GameTest(template="combat",batch="hitbox_dedup")
     public static void DifferentAttackersRemainIndependentWhileOverlapsDoNotMultiplyDamage(GameTestHelper h){var c=core(h);module(c);module(c);var bs=boxes(c);var a=EntityType.ZOMBIE.create(h.getLevel());var b=EntityType.ZOMBIE.create(h.getLevel());var sa=h.getLevel().damageSources().mobAttack(a);var sb=h.getLevel().damageSources().mobAttack(b);for(var box:bs){box.hurt(sa,10);box.hurt(sb,15);}c.modules().damageBoxes.flush(c);hp(h,c,975);h.succeed();}
     @GameTest(template="combat",batch="hitbox_armor")
-    public static void ReceiverUsesMarkedPartArmorExactlyOnceAndAggregatesAreaMaximum(GameTestHelper h){var c=core(h);var part=module(c);var head=module(c);head.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));var armor=c.modules().add("armor");armor.anchors(part.anchors());var row=armor.armorRules().add();row.edit("channel",c.wireless().add()+1);row.edit("when",1);row.edit("modifier",-50);var bs=boxes(c);bs.getFirst().hurt(h.getLevel().damageSources().generic(),20);c.modules().damageBoxes.flush(c);hp(h,c,990);var source=h.getLevel().damageSources().explosion(null,null);bs.getFirst().hurt(source,20);bs.getLast().hurt(source,40);c.modules().damageBoxes.flush(c);hp(h,c,970);h.succeed();}
+    public static void ReceiverUsesMarkedPartArmorExactlyOnceAndAggregatesAreaMaximum(GameTestHelper h){var c=core(h);var part=module(c);var head=module(c);head.anchors(List.of(ModuleAnchor.create(c,c.getBlockPos(),Direction.UP)));var armor=c.modules().add("armor");armor.anchors(part.anchors());var row=armor.armorRules().add();var armorChannel=c.wireless().add();c.wireless().channel(armorChannel).set(0,0);row.edit("channel",armorChannel+1);row.edit("when",1);row.edit("modifier",-50);var bs=boxes(c);bs.getFirst().hurt(h.getLevel().damageSources().generic(),20);c.modules().damageBoxes.flush(c);hp(h,c,990);var source=h.getLevel().damageSources().explosion(null,null);bs.getFirst().hurt(source,20);bs.getLast().hurt(source,40);c.modules().damageBoxes.flush(c);hp(h,c,970);h.succeed();}
     @GameTest(template="combat",batch="hitbox_projectile")
     public static void OneProjectileOnlyDamagesOneReceiverAcrossTicks(GameTestHelper h){var c=core(h);module(c);module(c);var bs=boxes(c);var arrow=new Arrow(h.getLevel(),0,0,0,new ItemStack(Items.ARROW),null);var source=h.getLevel().damageSources().arrow(arrow,null);for(var box:bs)box.hurt(source,12);c.modules().damageBoxes.flush(c);hp(h,c,988);for(var box:bs)box.hurt(source,12);c.modules().damageBoxes.flush(c);hp(h,c,988);h.succeed();}
     @GameTest(template="combat",batch="hitbox_lifecycle")
@@ -108,7 +108,7 @@ public final class EntityHitboxGameTests {
     @GameTest(template="combat",batch="hitbox_cancellation")
     public static void CancelledIncomingEntityDamageNeverReachesCore(GameTestHelper h){var c=core(h);module(c);var b=boxes(c).getFirst();java.util.function.Consumer<net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent> cancel=e->{if(e.getEntity()==b)e.setCanceled(true);};net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(net.neoforged.bus.api.EventPriority.HIGHEST,cancel);try{h.assertTrue(!b.hurt(h.getLevel().damageSources().generic(),20),"Cancelled entity damage accepted");}finally{net.neoforged.neoforge.common.NeoForge.EVENT_BUS.unregister(cancel);}c.modules().damageBoxes.flush(c);hp(h,c,1000);h.succeed();}
     @GameTest(template="combat",batch="hitbox_gating")
-    public static void ImmunePartConsumesShotAndSignalLossRestoresStructureMode(GameTestHelper h){var c=core(h);var m=module(c);var armor=c.modules().add("armor");armor.anchors(m.anchors());var row=armor.armorRules().add();row.edit("channel",c.wireless().add()+1);row.edit("when",1);row.edit("modifier",-100);var b=boxes(c).getFirst();var arrow=new Arrow(h.getLevel(),0,0,0,new ItemStack(Items.ARROW),null);var source=h.getLevel().damageSources().arrow(arrow,null);b.hurt(source,20);c.modules().damageBoxes.flush(c);hp(h,c,1000);armor.edit("enabled",0,"");b.hurt(source,20);c.modules().damageBoxes.flush(c);hp(h,c,1000);m.edit("trigger",2,"");m.edit("channel",0,"");boxes(c);h.assertTrue(b.isRemoved()&&!EntityHitboxes.mode(c),"Unpowered receiver retained entity mode");h.assertTrue(c.damageAt(c.getBlockPos(),10),"Unpowered receiver blocked structure damage");h.succeed();}
+    public static void ImmunePartConsumesShotAndSignalLossRestoresStructureMode(GameTestHelper h){var c=core(h);var m=module(c);var armor=c.modules().add("armor");armor.anchors(m.anchors());var row=armor.armorRules().add();var armorChannel=c.wireless().add();c.wireless().channel(armorChannel).set(0,0);row.edit("channel",armorChannel+1);row.edit("when",1);row.edit("modifier",-100);var b=boxes(c).getFirst();var arrow=new Arrow(h.getLevel(),0,0,0,new ItemStack(Items.ARROW),null);var source=h.getLevel().damageSources().arrow(arrow,null);b.hurt(source,20);c.modules().damageBoxes.flush(c);hp(h,c,1000);armor.edit("enabled",0,"");b.hurt(source,20);c.modules().damageBoxes.flush(c);hp(h,c,1000);m.edit("trigger",2,"");m.edit("channel",0,"");boxes(c);h.assertTrue(b.isRemoved()&&!EntityHitboxes.mode(c),"Unpowered receiver retained entity mode");h.assertTrue(c.damageAt(c.getBlockPos(),10),"Unpowered receiver blocked structure damage");h.succeed();}
 
     @GameTest(template="combat",batch="hitbox_attack_identity")
     public static void MeleeUsesFirstReceiverButProjectileExplosionUsesMaximum(GameTestHelper h){var c=core(h);module(c);module(c);var bs=boxes(c);var zombie=EntityType.ZOMBIE.create(h.getLevel());var melee=h.getLevel().damageSources().mobAttack(zombie);bs.getFirst().hurt(melee,5);bs.getLast().hurt(melee,30);c.modules().damageBoxes.flush(c);hp(h,c,995);var arrow=new Arrow(h.getLevel(),0,0,0,new ItemStack(Items.ARROW),null);bs.getFirst().hurt(h.getLevel().damageSources().arrow(arrow,null),12);c.modules().damageBoxes.flush(c);hp(h,c,983);var explosion=h.getLevel().damageSources().explosion(arrow,null);bs.getFirst().hurt(explosion,20);bs.getLast().hurt(explosion,40);c.modules().damageBoxes.flush(c);hp(h,c,943);h.succeed();}
@@ -144,9 +144,100 @@ public final class EntityHitboxGameTests {
         var c=core(h);mixed(c);var b=boxes(c).getFirst();var a=arrow(h);a.setDeltaMovement(2,0,0);a.setBaseDamage(3);
         b.hurt(h.getLevel().damageSources().arrow(a,null),18);BodyCombat.onProjectileImpact(new net.neoforged.neoforge.event.entity.ProjectileImpactEvent(a,block(c)));c.modules().damageBoxes.flush(c);hp(h,c,994);h.succeed();
     }
+    @GameTest(template="combat",batch="projectile_armor_routes")
+    public static void ProjectileOnlyArmorFollowsSignalAcrossDamageRoutes(GameTestHelper h){
+        var c=core(h);
+        var armor=c.modules().add("armor");
+        armor.edit("armorWholeBody",1,"");
+        armor.edit("armorProjectileOnly",1,"");
+        var channel=c.wireless().add();
+        c.wireless().channel(channel).set(0,1);
+        c.wireless().channel(channel).set(6,3);
+        var row=armor.armorRules().add();
+        row.edit("channel",channel+1);
+        row.edit("modifier",-100);
+        c.wireless().programOutputs("projectile_armor",Map.of(channel,15));
+
+        var direct=arrow(h);
+        direct.setDeltaMovement(2,0,0);
+        direct.setBaseDamage(3);
+        BodyCombat.onProjectileImpact(new net.neoforged.neoforge.event.entity.ProjectileImpactEvent(direct,block(c)));
+        hp(h,c,1000);
+        var attacker=TestActors.creative(h.getLevel());
+        h.assertTrue(BodyDamageBridge.melee(attacker,c,block(c).getBlockPos(),block(c).getLocation(),10),"Projectile rule shielded a melee hit");
+        hp(h,c,990);
+
+        var boxModule=module(c);
+        var receiver=boxes(c).getFirst();
+        var entityShot=arrow(h);
+        var sources=h.getLevel().damageSources();
+        receiver.hurt(sources.arrow(entityShot,null),20);
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,990);
+        receiver.hurt(sources.explosion(entityShot,null),12);
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,978);
+
+        boxModule.edit("hitboxDamageMode",1,"");
+        module(c);
+        var hybridShot=arrow(h);
+        for(var box:boxes(c))box.hurt(sources.arrow(hybridShot,null),30);
+        h.assertTrue(!dev.sablelife.api.BodyCombatApi.projectile(hybridShot,block(c),20),"Hybrid direct hit bypassed the rule");
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,978);
+
+        c.wireless().programOutputs("projectile_armor",Map.of());
+        var unshielded=arrow(h);
+        for(var box:boxes(c))box.hurt(sources.arrow(unshielded,null),30);
+        h.assertTrue(dev.sablelife.api.BodyCombatApi.projectile(unshielded,block(c),20),"Shield stayed active after signal loss");
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,958);
+        h.succeed();
+    }
+    @GameTest(template="combat",batch="armor_damage_types")
+    public static void OnePhaseUsesTheMatchingDamageModifier(GameTestHelper h){
+        var c=core(h);
+        var armor=c.modules().add("armor");
+        armor.edit("armorWholeBody",1,"");
+        var row=armor.armorRules().add();
+        var channel=c.wireless().add();
+        c.wireless().channel(channel).set(0,1);
+        c.wireless().channel(channel).set(6,3);
+        row.edit("channel",channel+1);
+        row.edit("modifier",-20);
+        row.edit("meleeOverride",1);
+        row.edit("meleeModifier",-50);
+        row.edit("projectileOverride",1);
+        row.edit("projectileModifier",-100);
+        c.wireless().programOutputs("armor_types",Map.of(channel,15));
+        var player=TestActors.creative(h.getLevel());
+        var contact=block(c);
+        h.assertTrue(BodyDamageBridge.melee(player,c,contact.getBlockPos(),contact.getLocation(),20),"Structure melee rejected");
+        hp(h,c,990);
+
+        module(c);
+        var box=boxes(c).getFirst();
+        var sources=h.getLevel().damageSources();
+        var arrow=arrow(h);
+        box.hurt(sources.arrow(arrow,player),20);
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,990);
+        box.hurt(sources.explosion(arrow,player),20);
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,974);
+        box.hurt(sources.playerAttack(player),20);
+        c.modules().damageBoxes.flush(c);
+        hp(h,c,964);
+        row.edit("meleeModifier",25);
+        var melee=ArmorRules.HitType.MELEE;
+        h.assertTrue(ModuleArmor.damage(c,contact.getBlockPos(),20,melee)==25,"General suppressed the positive melee override");
+        row.edit("meleeOverride",0);
+        h.assertTrue(ModuleArmor.damage(c,contact.getBlockPos(),20,melee)==16,"Melee failed to inherit general");
+        h.succeed();
+    }
     @GameTest(template="combat",batch="hybrid_immune")
     public static void ImmuneBodyContactConsumesShotAndCannotFallThroughToReceiver(GameTestHelper h){
-        var c=core(h);var m=mixed(c);var armor=c.modules().add("armor");armor.anchors(m.anchors());var row=armor.armorRules().add();row.edit("channel",c.wireless().add()+1);row.edit("when",1);row.edit("modifier",-100);
+        var c=core(h);var m=mixed(c);var armor=c.modules().add("armor");armor.anchors(m.anchors());var row=armor.armorRules().add();var armorChannel=c.wireless().add();c.wireless().channel(armorChannel).set(0,0);row.edit("channel",armorChannel+1);row.edit("when",1);row.edit("modifier",-100);
         var b=boxes(c).getFirst();var a=arrow(h);b.hurt(h.getLevel().damageSources().arrow(a,null),30);
         h.assertTrue(!dev.sablelife.api.BodyCombatApi.projectile(a,block(c),30),"Immune body reported health loss");armor.edit("enabled",0,"");b.hurt(h.getLevel().damageSources().arrow(a,null),30);c.modules().damageBoxes.flush(c);hp(h,c,1000);
         h.assertTrue(!dev.sablelife.api.BodyCombatApi.projectile(a,block(c),30),"Immune first contact did not consume projectile");h.succeed();
@@ -193,7 +284,7 @@ public final class EntityHitboxGameTests {
 
     @GameTest(template="combat",batch="hybrid_post_event")
     public static void PostDamageEventReportsOneActualPartAdjustedHealthLoss(GameTestHelper h){
-        var c=core(h);var m=mixed(c);module(c);var armor=c.modules().add("armor");armor.anchors(m.anchors());var row=armor.armorRules().add();row.edit("channel",c.wireless().add()+1);row.edit("when",1);row.edit("modifier",-50);var bs=boxes(c);
+        var c=core(h);var m=mixed(c);module(c);var armor=c.modules().add("armor");armor.anchors(m.anchors());var row=armor.armorRules().add();var armorChannel=c.wireless().add();c.wireless().channel(armorChannel).set(0,0);row.edit("channel",armorChannel+1);row.edit("when",1);row.edit("modifier",-50);var bs=boxes(c);
         final int[] count={0};final float[] reported={0};java.util.function.Consumer<net.neoforged.neoforge.event.entity.living.LivingDamageEvent.Post> capture=e->{if(e.getEntity() instanceof EntityHitbox box&&box.core()==c){count[0]++;reported[0]+=e.getNewDamage();}};
         net.neoforged.neoforge.common.NeoForge.EVENT_BUS.addListener(capture);try{var a=arrow(h);for(var b:bs)b.hurt(h.getLevel().damageSources().arrow(a,null),20);h.assertTrue(count[0]==0,"Post event ran before core settlement");c.modules().damageBoxes.flush(c);hp(h,c,990);h.assertTrue(count[0]==1&&reported[0]==10,"Post event reported raw/duplicate damage: "+reported[0]);}finally{net.neoforged.neoforge.common.NeoForge.EVENT_BUS.unregister(capture);}h.succeed();
     }

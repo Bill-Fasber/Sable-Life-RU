@@ -35,7 +35,26 @@ public final class DeathSignals extends SavedData {
         int channel=(int)row.value("eventChannel")-1;if(!row.enabled()||row.value("eventKind")!=3||channel<0||channel>=heart.wireless().size())continue;var c=heart.wireless().channel(channel);
         if(c.configured()&&c.programmed()&&c.transmitting())result.add(new Pulse(row.id(),channel,c.first(),c.second(),(int)row.value("eventPower"),(int)row.value("eventPulse")));
     }return result;}
-    public static void enqueue(HeartBlockEntity heart,List<Pulse> pulses){if(heart.health().state()!=HeartState.DYING||!(heart.getLevel() instanceof ServerLevel level))return;var data=get(level.getServer());var pos=BlockPos.containing(dev.sablelife.compat.sable.SableBodyProbe.toWorld(level,heart.getBlockPos().getCenter()));for(var pulse:pulses){var j=new Job();j.id=UUID.randomUUID();j.dimension=level.dimension().location();j.pos=pos;j.first=pulse.first.copy();j.second=pulse.second.copy();j.power=pulse.power;j.remaining=pulse.ticks;data.jobs.put(j.id,j);data.register(level.getServer(),j);}if(!pulses.isEmpty())data.setDirty();}
+    public static void enqueue(HeartBlockEntity heart, List<Pulse> pulses) {
+        if (pulses.isEmpty() || heart.health().state() != HeartState.DYING
+                || !(heart.getLevel() instanceof ServerLevel level)) return;
+        ModuleMessageDisplay.onOwnDeath(heart, level, pulses);
+        var data = get(level.getServer());
+        var pos = BlockPos.containing(dev.sablelife.compat.sable.SableBodyProbe.toWorld(level, heart.getBlockPos().getCenter()));
+        for (var pulse : pulses) {
+            var job = new Job();
+            job.id = UUID.randomUUID();
+            job.dimension = level.dimension().location();
+            job.pos = pos;
+            job.first = pulse.first.copy();
+            job.second = pulse.second.copy();
+            job.power = pulse.power;
+            job.remaining = pulse.ticks;
+            data.jobs.put(job.id, job);
+            data.register(level.getServer(), job);
+        }
+        data.setDirty();
+    }
     private void register(MinecraftServer server,Job job){job.level=server.getLevel(ResourceKey.create(net.minecraft.core.registries.Registries.DIMENSION,job.dimension));if(job.level!=null&&!job.registered){Create.REDSTONE_LINK_NETWORK_HANDLER.addToNetwork(job.level,job);job.registered=true;}}
     public static void tick(ServerTickEvent.Post event){var data=get(event.getServer());for(var j:List.copyOf(data.jobs.values())){data.register(event.getServer(),j);if(j.level==null)continue;if(--j.remaining<=0){if(j.registered){Create.REDSTONE_LINK_NETWORK_HANDLER.updateNetworkOf(j.level,j);Create.REDSTONE_LINK_NETWORK_HANDLER.removeFromNetwork(j.level,j);}data.jobs.remove(j.id);}else if(j.remaining%5==0)Create.REDSTONE_LINK_NETWORK_HANDLER.updateNetworkOf(j.level,j);data.setDirty();}}
     public int size(){return jobs.size();}

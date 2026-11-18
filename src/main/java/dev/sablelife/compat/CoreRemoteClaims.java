@@ -1,6 +1,7 @@
 package dev.sablelife.compat;
 
 import com.mojang.logging.LogUtils;
+import dev.sablelife.SableLifeServerConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
@@ -16,7 +17,9 @@ public final class CoreRemoteClaims {
             "openpartiesandclaims", "ftbchunks", "ftbchunksaerospace", "create_aeronautics_ftb_chunks");
 
     private static final class Installed {
-        private static final boolean UNSUPPORTED = OTHER_PROTECTIONS.stream().anyMatch(ModList.get()::isLoaded);
+        private static final List<String> UNSUPPORTED_IDS = OTHER_PROTECTIONS.stream().filter(ModList.get()::isLoaded).toList();
+        private static final String UNSUPPORTED_NAMES = String.join(", ", UNSUPPORTED_IDS);
+        private static final boolean UNSUPPORTED = !UNSUPPORTED_IDS.isEmpty();
         private static final boolean AERO = ModList.get().isLoaded(AERO_CLAIMS);
     }
 
@@ -51,16 +54,33 @@ public final class CoreRemoteClaims {
         }
     }
 
+    public enum Denial {
+        UNSUPPORTED_PROTECTION, UNSUPPORTED_AEROCLAIMS, CLAIM_DENIED, CHECK_FAILED
+    }
+
     public static boolean allows(ServerPlayer player, BlockPos pos) {
-        if (Installed.UNSUPPORTED) return false;
-        if (!Installed.AERO) return true;
+        return denial(player, pos) == null;
+    }
+
+    /** Null means allowed. Reporting the cause does not bypass any protection check. */
+    public static Denial denial(ServerPlayer player, BlockPos pos) {
+        boolean allowUnsupported = SableLifeServerConfig.allowCoreRemoteWithUnsupportedClaims();
+        if (Installed.UNSUPPORTED && !allowUnsupported) return Denial.UNSUPPORTED_PROTECTION;
+        if (!Installed.AERO) return null;
         var access = AeroClaims.ACCESS;
-        if (access == null) return false;
+        if (access == null) return allowUnsupported ? null : Denial.UNSUPPORTED_AEROCLAIMS;
         try {
-            return access.allows(player, pos);
+            return access.allows(player, pos) ? null : Denial.CLAIM_DENIED;
         } catch (ReflectiveOperationException | LinkageError | RuntimeException error) {
-            return false;
+            return Denial.CHECK_FAILED;
         }
+    }
+
+    public static String unsupportedProtectionIds() { return Installed.UNSUPPORTED_NAMES; }
+
+    public static String aeroClaimsVersion() {
+        return ModList.get().getModContainerById(AERO_CLAIMS)
+                .map(mod -> mod.getModInfo().getVersion().toString()).orElse("");
     }
 
     private CoreRemoteClaims() {}

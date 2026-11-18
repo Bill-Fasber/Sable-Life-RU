@@ -9,6 +9,7 @@ group = mod_group_id
 base { archivesName = mod_id }
 tasks.named('jar', Jar) {
     archiveFileName = "${mod_id}-neoforge-${minecraft_version}-v${mod_version}.jar"
+    from(['LICENSE', 'TEMPLATE_LICENSE.txt']) { into 'META-INF' }
 }
 java.toolchain.languageVersion = JavaLanguageVersion.of(21)
 
@@ -586,6 +587,7 @@ neoForge {
             loadedMods = [mods.sablelife, mods.sablelife_tests]
             gameDirectory = file(providers.gradleProperty('coreAuditDirectory').getOrElse('runs/core-module-audit-client-397-20261108'))
             systemProperty 'sablelife.coreModuleAudit', 'true'
+            systemProperty 'sablelife.signalTurnUiOnly', providers.gradleProperty('signalTurnUiOnly').getOrElse('false')
             systemProperty 'sablelife.corePatternUi', providers.gradleProperty('corePatternUi').getOrElse('false')
             systemProperty 'sablelife.survivalAimOnly', providers.gradleProperty('survivalAimOnly').getOrElse('false')
             systemProperty 'sablelife.propertyHelpPreview', providers.gradleProperty('propertyHelpPreview').getOrElse('false')
@@ -600,11 +602,20 @@ neoForge {
             systemProperty 'sablelife.laserControlsPreview', 'true'
             programArguments.addAll '--width', '1600', '--height', '1000'
         }
+        survivalRefuelPreview {
+            client()
+            sourceSet = sourceSets.gameTest
+            loadedMods = [mods.sablelife, mods.sablelife_tests]
+            gameDirectory = file('runs/survival-refuel-preview')
+            systemProperty 'sablelife.survivalRefuelPreview', 'true'
+            programArguments.addAll '--width', '1600', '--height', '900'
+        }
         gameTestServer {
             type = 'gameTestServer'
             sourceSet = sourceSets.gameTest
             loadedMods = [mods.sablelife, mods.sablelife_tests]
             gameDirectory = file(providers.gradleProperty('gameTestDirectory').getOrElse('runs/gametest'))
+            systemProperty 'sablelife.walkerExpectDisabled', providers.gradleProperty('walkerExpectDisabled').getOrElse('false')
             systemProperty 'sablelife.localGameTests', 'true'
             systemProperty 'sablelife.expectExampleAddon', providers.gradleProperty('exampleAddonTests').getOrElse('false')
             if(providers.gradleProperty('dragonReplayTests').getOrElse('false')=='true') systemProperty 'sablelife.dragonReplayTemplate', file('.dev/dragon-template.nbt').absolutePath
@@ -632,6 +643,8 @@ dependencies {
     }
     if (providers.gradleProperty('artificeTests').getOrElse('false') == 'true') gameTestRuntimeOnly fileTree(dir: '.dev/artifice-testmods', include: ['*.jar'])
     if (providers.gradleProperty('coreRemoteClaimsTest').isPresent()) gameTestRuntimeOnly files(providers.gradleProperty('coreRemoteClaimsTest').get())
+    if (providers.gradleProperty('walkerLegTestMod').isPresent()) gameTestRuntimeOnly files(providers.gradleProperty('walkerLegTestMod').get())
+    if (providers.gradleProperty('walkerBreachingTestMod').isPresent()) gameTestRuntimeOnly files(providers.gradleProperty('walkerBreachingTestMod').get())
     if(providers.gradleProperty('shaderParticleTests').getOrElse('false')=='true') {
         gameTestRuntimeOnly fileTree(dir: '.dev/shader-test-mods', include: ['iris*.jar'])
         gameTestRuntimeOnly fileTree(dir: '.dev/shader-merged', include: ['*.jar'])
@@ -640,6 +653,9 @@ dependencies {
     // Downloaded from the official Modrinth release pages, pinned by SHA-512.
     implementation files('.dev/mods/sable-neoforge-1.21.1-2.0.5.jar')
     compileOnly fileTree(dir: '.dev/compile-libs', include: ['*.jar'])
+    // Optional client adapter only; these third-party classes are never bundled in Sable Life.
+    compileOnly files('.dev/littletiles-regression/mods/LittleTiles_BETA_v1.6.0-pre239_mc1.21.1.jar')
+    compileOnly files('.dev/littletiles-regression/mods/CreativeCore_NEOFORGE_v2.13.54_mc1.21.1.jar')
     compileOnly files('.dev/mods/create-1.21.1-6.0.10.jar')
     compileOnly files('.dev/epicfight/epic-fight-21.17.3.1-mc1.21.1-neoforge.jar')
     compileOnly files('.dev/iron-spells-review/irons_spellbooks-1.21.1-3.16.3.jar')

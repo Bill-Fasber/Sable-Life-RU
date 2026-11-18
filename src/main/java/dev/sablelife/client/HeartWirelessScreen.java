@@ -31,7 +31,115 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
     private int deleteUntil, deleteChannel = -1, deleteCount;
     private Button enabled, loop, master, picker, mode, add, previous, next, remove, nameApply, back;
     private EditBox nameInput, latchReset;
-    private Button latch, latchResetApply;
+    private Button latch, latchResetApply, outputEntry;
+    private boolean outputEditor, openedInitialView;
+    private int facePage, faceRows;
+    private Button addFace, facePrevious, faceNext;
+    private final List<Button> markFaces=new ArrayList<>(), previewFaces=new ArrayList<>(), removeFaces=new ArrayList<>();
+
+    private final List<EditBox> faceNames = new ArrayList<>();
+    private final List<Button> saveFaceNames = new ArrayList<>();
+    private int faceNameWidth, faceStatusX, faceStatusWidth;
+    private int displayedFacePage = -1, displayedFaceRevision;
+    private static final int FACE_NAME_X = 30;
+
+    private void setOutputEditor(boolean open) {
+        outputEditor=open;
+        rebuildWidgets();
+    }
+
+    private void sendFace(String operation,int index) {
+        sendFace(operation,index,"");
+    }
+
+    private void sendFace(String operation,int index,String text) {
+        var snapshot=menu.outputSnapshot();
+        if (snapshot.getInt("Selected") != menu.selected()) return;
+        net.neoforged.neoforge.network.PacketDistributor.sendToServer(new dev.sablelife.module.ModuleNetworking.Action(
+                menu.containerId,snapshot.getInt("FaceRevision"),new java.util.UUID(0,0),"wire_face",operation,
+                menu.selected()*128+index,text));
+    }
+
+    private void renameFace(int row) {
+        var input = faceNames.get(row);
+        if (!input.visible || !input.active) return;
+        String name = input.getValue();
+        if (name.codePointCount(0,name.length()) > dev.sablelife.heart.WirelessChannel.NAME_LIMIT) {
+            input.setTextColor(0xFF7777);
+            return;
+        }
+        sendFace("rename",facePage*faceRows+row,name);
+        input.setFocused(false);
+    }
+
+    private void initOutputEditor() {
+        menu.layoutSlots(-10000,-10000,-10000);
+        markFaces.clear(); previewFaces.clear(); removeFaces.clear();
+        faceNames.clear(); saveFaceNames.clear();
+        displayedFacePage=-1;
+        faceRows=Math.clamp((imageHeight-90)/22,1,8);
+        button(tr("back"),imageWidth-62,8,52,()->setOutputEditor(false));
+        int controlWidth=Math.clamp(imageWidth/6,48,76);
+        int controls=imageWidth-36-2*controlWidth;
+        faceStatusWidth=Math.clamp((controls-FACE_NAME_X)/3,46,120);
+        faceStatusX=controls-faceStatusWidth-4;
+        faceNameWidth=faceStatusX-FACE_NAME_X-26;
+        for (int i=0;i<faceRows;i++) {
+            int row=i,y=36+i*22;
+            var name = addRenderableWidget(new EditBox(font,leftPos+FACE_NAME_X,topPos+y,faceNameWidth,18,tr("face_name")));
+            name.setHint(tr("face_name"));
+            name.setTooltip(Tooltip.create(tr("face_name_help")));
+            name.setMaxLength(dev.sablelife.heart.WirelessChannel.NAME_LIMIT*2);
+            faceNames.add(name);
+            saveFaceNames.add(button(Component.literal("✓"),FACE_NAME_X+faceNameWidth+4,y,18,()->renameFace(row)));
+            markFaces.add(button(tr("face_mark"),controls,y,controlWidth,()->sendFace("mark",facePage*faceRows+row)));
+            previewFaces.add(button(tr("face_preview"),controls+controlWidth+4,y,controlWidth,()->sendFace("preview",facePage*faceRows+row)));
+            var removeFace=button(Component.literal("×").withStyle(net.minecraft.ChatFormatting.RED),imageWidth-28,y,18,
+                    ()->sendFace("remove",facePage*faceRows+row));
+            removeFace.setTooltip(Tooltip.create(Component.translatable("dashboard.sablelife.remove_output_face")));
+            removeFaces.add(removeFace);
+        }
+        int pagerY=imageHeight-51;
+        facePrevious=button(Component.literal("‹"),10,pagerY,28,()->{facePage--;syncFaces();});
+        faceNext=button(Component.literal("›"),imageWidth-38,pagerY,28,()->{facePage++;syncFaces();});
+        addFace=button(tr("face_add"),10,imageHeight-28,120,()->sendFace("mark",outputFaces().size()));
+        syncFaces();
+    }
+
+    private net.minecraft.nbt.ListTag outputFaces() { return menu.outputSnapshot().getList("OutputFaces",10); }
+
+    private void syncFaces() {
+        var faces=outputFaces();
+        facePage=Math.clamp(facePage,0,Math.max(0,(faces.size()-1)/faceRows));
+        boolean editable=menu.value(HeartWirelessMenu.EDITABLE)!=0 && menu.count()>0;
+        int revision=menu.outputSnapshot().getInt("FaceRevision");
+        boolean rowsChanged=displayedFacePage!=facePage||displayedFaceRevision!=revision;
+        displayedFacePage=facePage;
+        displayedFaceRevision=revision;
+        for (int row=0;row<faceRows;row++) {
+            int index=facePage*faceRows+row;
+            boolean exists=index<faces.size();
+            var mark=markFaces.get(row); var preview=previewFaces.get(row); var remove=removeFaces.get(row);
+            mark.visible=preview.visible=remove.visible=exists;
+            mark.active=remove.active=editable && exists;
+            preview.active=exists && faces.getCompound(index).getString("Status").equals("valid");
+            var name=faceNames.get(row);
+            var save=saveFaceNames.get(row);
+            name.visible=save.visible=exists;
+            name.active=exists&&editable;
+            name.setEditable(name.active);
+            if (rowsChanged||!name.active) name.setFocused(false);
+            String saved=exists?faces.getCompound(index).getString("Name"):"";
+            if (!name.isFocused() && !name.getValue().equals(saved)) {
+                name.setValue(saved);
+                name.setTextColor(0xE0E0E0);
+            }
+            save.active=name.active&&!name.getValue().equals(saved);
+        }
+        facePrevious.active=facePage>0;
+        faceNext.active=(facePage+1)*faceRows<faces.size();
+        addFace.active=editable && faces.size()<menu.outputFaceLimit();
+    }
     public HeartWirelessScreen(HeartWirelessMenu menu, Inventory inventory, Component title) {
         super(menu, inventory, title); imageWidth = 360; imageHeight = 234;
     }
@@ -46,8 +154,9 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         fieldPitch = Math.clamp((imageHeight - (showTimeline ? 89 : 55) - 96) / 6, 13, 30);
         sidebarPitch = Math.max(14, (int)Math.ceil(font.lineHeight * LifeUiStyle.scale()) + 8);
         requestedRows = Math.clamp((imageHeight - 51 - 34 - 5) / sidebarPitch, 1, HeartWirelessMenu.PAGE_SIZE);
-        menu.layoutSlots(detailX + 35, detailX + 91, 60);
+        menu.layoutSlots(detailX + 10, detailX + 41, 60);
         super.init(); channelButtons.clear(); editButtons.clear(); inputs.clear();
+        if (outputEditor) { initOutputEditor(); return; }
         for (int i = 0; i < HeartWirelessMenu.PAGE_SIZE; i++) {
             int row = i;
             var control = button(Component.empty(), 10, 34 + i * sidebarPitch, detailX - 20,
@@ -66,8 +175,11 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         nameInput.setMaxLength(dev.sablelife.heart.WirelessChannel.NAME_LIMIT * 2);
         nameInput.setHint(tr("name")); nameInput.setTooltip(Tooltip.create(tr("name_help")));
         nameApply = addRenderableWidget(LifeUiStyle.button(Component.literal("✓"), leftPos + imageWidth - 30, topPos + 34, 20, 18, this::rename));
-        picker = button(tr("choose_items"), detailX + 118, 60, detailWidth - 118, () -> send(0,13,0));
+        int entryStart=detailX+68, entryWidth=(imageWidth-14-entryStart)/2;
+        picker = button(tr("choose_items"),entryStart,60,entryWidth,()->send(0,13,0));
+        outputEntry = button(tr("output_faces"),entryStart+entryWidth+4,60,entryWidth,()->{facePage=0;setOutputEditor(true);});
         picker.setTooltip(Tooltip.create(tr("sample_help")));
+        outputEntry.setTooltip(Tooltip.create(tr("face_help")));
         for (int field = 1; field <= 4; field++) {
             final int parameter = field;
             int y = 96 + (field - 1) * fieldPitch;
@@ -180,7 +292,7 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         loop.setMessage(tr(menu.setting(selected, 5) == 0 ? "once" : "loop"));
         master.setMessage(tr(menu.value(HeartWirelessMenu.MASTER) == 0 ? "master_off" : "master_on"));
         master.active = editable;
-        picker.visible = exists;
+        picker.visible = outputEntry.visible = exists;
         picker.setMessage(tr("choose_items"));
         nameInput.visible = exists; nameApply.visible = exists;
         nameInput.active = editable && exists; nameInput.setEditable(nameInput.active); nameApply.active = nameInput.active;
@@ -188,8 +300,23 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         if (!nameInput.isFocused()) nameInput.setValue(menu.channelName(selected));
         lastSelected = selected;
     }
-    @Override protected void containerTick() { super.containerTick(); tickCount++; sync(); }
+    @Override protected void containerTick() {
+        super.containerTick(); tickCount++;
+        var snapshot=menu.outputSnapshot();
+        if (!openedInitialView && snapshot.contains("OutputRow")) {
+            openedInitialView=true;
+            int row=snapshot.getInt("OutputRow");
+            if (row>=0) {
+                setOutputEditor(true);
+                facePage=row/faceRows;
+                syncFaces();
+                return;
+            }
+        }
+        if (outputEditor) syncFaces(); else sync();
+    }
     @Override public boolean mouseScrolled(double mouseX, double mouseY, double horizontal, double vertical) {
+        if(outputEditor)return super.mouseScrolled(mouseX,mouseY,horizontal,vertical);
         if(vertical!=0&&latchReset.active&&latchReset.isMouseOver(mouseX,mouseY)){
             int v;try{v=Integer.parseInt(latchReset.getValue());}catch(NumberFormatException ignored){v=menu.setting(menu.selected(),8);}
             int nextValue=Math.clamp(v+(int)Math.signum(vertical),0,menu.count());if(nextValue==menu.selected()+1)nextValue=Math.clamp(nextValue+(int)Math.signum(vertical),0,menu.count());
@@ -210,6 +337,18 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         return super.mouseScrolled(mouseX, mouseY, horizontal, vertical);
     }
     @Override public boolean keyPressed(int key, int scan, int modifiers) {
+        if (outputEditor) {
+            if (key==256) { setOutputEditor(false); return true; }
+            for (int i=0;i<faceNames.size();i++) {
+                var name=faceNames.get(i);
+                if (name.visible&&name.active&&name.isFocused()) {
+                    if (key==257||key==335) renameFace(i);
+                    else name.keyPressed(key,scan,modifiers);
+                    return true;
+                }
+            }
+            return super.keyPressed(key,scan,modifiers);
+        }
         if(latchReset.visible&&latchReset.active&&latchReset.isFocused()){
             if(key==257||key==335){applyLatchReset();return true;}if(key!=256){latchReset.keyPressed(key,scan,modifiers);return true;}
         }
@@ -228,11 +367,13 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         g.fill(x - 2, y - 2, x + imageWidth + 2, y + imageHeight + 2, 0xFF19151D);
         g.fill(x, y, x + imageWidth, y + imageHeight, 0xFF9B614E);
         g.fill(x + 3, y + 3, x + imageWidth - 3, y + imageHeight - 3, 0xFF242632);
+        if (outputEditor) return;
         g.fill(x + 5, y + 5, x + detailX - 8, y + imageHeight - 5, 0xFF363140);
         g.fill(x + detailX - 6, y + 5, x + detailX - 4, y + imageHeight - 5, 0xFF9770B5);
         g.fill(x + detailX - 3, y + 56, x + imageWidth - 10, y + 88, 0xFF37313D);
-        frame(g, x + detailX + 34, y + 59, 0xFFBE5356);
-        frame(g, x + detailX + 90, y + 59, 0xFF5686C9);
+        if (menu.count()==0) return;
+        frame(g, x + detailX + 9, y + 59, 0xFFBE5356);
+        frame(g, x + detailX + 40, y + 59, 0xFF5686C9);
         if (showTimeline && menu.count() > 0 && menu.setting(menu.selected(), 6) < 3) waveform(g);
     }
     private void frame(GuiGraphics g, int x, int y, int color) {
@@ -260,20 +401,37 @@ public final class HeartWirelessScreen extends AbstractContainerScreen<HeartWire
         g.drawString(font, label, 0, 0, color, false); g.pose().popPose();
     }
     @Override protected void renderLabels(GuiGraphics g, int mouseX, int mouseY) {
+        if (outputEditor) {
+            var faces=outputFaces();
+            text(g, Component.translatable("wireless.sablelife.face_title",menu.selected()+1,faces.size(),
+                    menu.outputFaceLimit()),10,12,imageWidth-80,0xF2DDD1);
+            if (faces.isEmpty()) g.drawWordWrap(font,tr("face_empty"),10,42,imageWidth-20,0xD9C4ED);
+            for (int row=0;row<faceRows;row++) {
+                int index=facePage*faceRows+row;
+                if (index>=faces.size()) break;
+                var face=faces.getCompound(index);
+                text(g,Component.literal((index+1)+"."),10,42+row*22,18,0xD9C4ED);
+                var status=tr("face_"+face.getString("Face")).copy().append(" · ").append(tr("face_"+face.getString("Status")));
+                text(g,status,faceStatusX,42+row*22,faceStatusWidth,0xD9C4ED);
+            }
+            LifeUiStyle.drawPageNumber(g,font,Component.literal((facePage+1)+" / "+Math.max(1,(faces.size()+faceRows-1)/faceRows)),
+                    facePrevious,faceNext,leftPos,topPos);
+            return;
+        }
         text(g, tr("title"), detailX, 12, detailWidth - 100, 0xF2DDD1);
         if (menu.count() > 0) text(g, Component.translatable("wireless.sablelife.channel", menu.selected() + 1), detailX, 39, 54, 0xD9C4ED);
         var pages = Component.literal((page + 1) + " / " + Math.max(1, (menu.count() + menu.pageSize() - 1) / menu.pageSize()));
-        text(g, pages, 43, imageHeight - 46, detailX - 84, 0xD9C4ED);
+        LifeUiStyle.drawPageNumber(g,font,pages,previous,next,leftPos,topPos);
         if (menu.count() == 0) { g.drawWordWrap(font, tr("empty"), detailX, 96, detailWidth, 0xD9C4ED); return; }
-        text(g, tr("red"), detailX + 5, 66, 26, 0xEF8B89);
-        text(g, tr("blue"), detailX + 61, 66, 26, 0x83B6EE);
+
         for (int field = 1; field <= 4; field++) text(g, tr("field_" + field), detailX, 96 + (field - 1) * fieldPitch + 3, inputX - detailX - 6, 0xE6D8EA);
         text(g,tr("latch"),detailX,96+4*fieldPitch+2,inputX-detailX-6,0xE6D8EA);
         text(g,tr("latch_reset"),detailX,96+5*fieldPitch+2,inputX-detailX-6,0xE6D8EA);
         if (showTimeline) text(g, menu.setting(menu.selected(), 6) == 1 ? Component.translatable("wireless.sablelife.receive_power", menu.value(HeartWirelessMenu.SELECTED_INPUT)) : tr(menu.setting(menu.selected(), 6) >= 3 ? "program_timeline" : "timeline"), detailX, imageHeight - 83, detailWidth, 0xBDA5D0);
     }
     @Override public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
-        sync(); renderBackground(graphics, mouseX, mouseY, partialTick);
+        if (outputEditor) syncFaces(); else sync();
+        renderBackground(graphics, mouseX, mouseY, partialTick);
         super.render(graphics, mouseX, mouseY, partialTick); renderTooltip(graphics, mouseX, mouseY);
     }
 }
